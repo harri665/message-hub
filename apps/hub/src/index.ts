@@ -40,7 +40,8 @@ if (hasWeb) {
       if (file.startsWith('assets/')) reply.header('cache-control', 'public, max-age=31536000, immutable');
       return reply.sendFile(file);
     }
-    if (file.startsWith('api/')) return reply.code(404).send({ error: 'not found' });
+    // API paths and discovery probes (MCP clients look for OAuth metadata) must not get the app's HTML.
+    if (file.startsWith('api/') || file.startsWith('.well-known/')) return reply.code(404).send({ error: 'not found' });
     reply.header('cache-control', 'no-cache');
     return reply.sendFile('index.html');
   });
