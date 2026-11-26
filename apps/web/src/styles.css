@@ -88,6 +88,11 @@ h1, h2, h3 { margin: 0; font-weight: 700; line-height: 1.2; }
 }
 .login-card .btn-primary { margin-top: 6px; padding: 11px; }
 .form-error { color: var(--danger); margin: 4px 0; font-size: 14px; }
+.field-hint { margin: -4px 0 4px; font-size: 13px; color: var(--muted); }
+.bb-form { display: grid; gap: 8px; margin-top: 8px; }
+.bb-form label { font-weight: 600; font-size: 14px; }
+.bb-form input { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); }
+.bb-form .row { display: flex; gap: 8px; }
 
 /* ---------- shell ---------- */
 .shell { display: grid; grid-template-columns: var(--sidebar-w) 1fr; height: 100%; }

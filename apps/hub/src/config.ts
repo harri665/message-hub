@@ -9,7 +9,8 @@ function required(name: string): string {
 export const config = {
   port: Number(process.env.PORT ?? 8080),
   databaseUrl: required('DATABASE_URL'),
-  appPassword: required('APP_PASSWORD'),
+  /** Optional: if unset, the password is created in the browser on first visit and stored hashed. */
+  appPassword: process.env.APP_PASSWORD ?? '',
   secureCookies: process.env.SECURE_COOKIES === 'true',
   sessionDays: Number(process.env.SESSION_DAYS ?? 90),
   attachmentsDir: path.resolve(process.env.ATTACHMENTS_DIR ?? './data/attachments'),

@@ -107,7 +107,13 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
   app.register(async (r) => {
     r.addHook('preHandler', requireSession);
 
-    r.get('/api/status', async () => ({ bluebubbles: bb.status, whatsapp: await wa.status() }));
+    r.get('/api/status', async () => ({ bluebubbles: { ...bb.status, url: bb.currentUrl }, whatsapp: await wa.status() }));
+
+    r.put<{ Body: { url?: string; password?: string } }>('/api/settings/bluebubbles', async (req, reply) => {
+      if (!req.body?.url || !req.body?.password) return reply.code(400).send({ error: 'Address and password are required' });
+      await bb.configure(req.body.url, req.body.password);
+      return { ok: true };
+    });
 
     r.post('/api/whatsapp/pair', async () => wa.pair());
     r.post('/api/whatsapp/logout', async () => wa.logout());

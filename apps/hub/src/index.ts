@@ -4,7 +4,7 @@ import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
-import { registerAuthRoutes } from './auth.js';
+import { initAuth, registerAuthRoutes } from './auth.js';
 import { config } from './config.js';
 import { migrate } from './db.js';
 import { registerApiRoutes } from './routes/api.js';
@@ -43,6 +43,7 @@ if (hasWeb) {
 const bb = new BlueBubbles(app.log);
 const wa = new WhatsApp(app.log);
 
+await initAuth(app.log);
 registerAuthRoutes(app);
 registerApiRoutes(app, bb, wa);
 

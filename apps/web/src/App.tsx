@@ -21,7 +21,7 @@ export function App() {
 
   useEffect(() => {
     const onHash = () => setTid(readHash());
-    const onLoggedOut = () => qc.setQueryData(['me'], { loggedIn: false });
+    const onLoggedOut = () => qc.invalidateQueries({ queryKey: ['me'] });
     window.addEventListener('hashchange', onHash);
     window.addEventListener('mh:logged-out', onLoggedOut);
     return () => {
@@ -37,7 +37,9 @@ export function App() {
   };
 
   if (me.isPending) return <div className="boot" aria-busy="true" />;
-  if (!loggedIn) return <Login onDone={() => qc.setQueryData(['me'], { loggedIn: true })} />;
+  if (!loggedIn) {
+    return <Login needsSetup={!!me.data?.needsSetup} onDone={() => qc.setQueryData(['me'], { loggedIn: true, needsSetup: false })} />;
+  }
 
   return (
     <div className={`shell ${tid ? 'has-thread' : ''}`}>

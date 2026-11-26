@@ -56,7 +56,7 @@ export interface SearchResult extends Message { tid: string; thread_title: strin
 
 export interface Status {
   bluebubbles: {
-    configured: boolean; connected: boolean; privateApi: boolean; serverVersion: string | null; osVersion: string | null;
+    configured: boolean; url: string | null; connected: boolean; privateApi: boolean; serverVersion: string | null; osVersion: string | null;
     lastSyncAt: string | null; importing: boolean; error: string | null;
   };
   whatsapp: {
@@ -89,8 +89,11 @@ const post = <T>(path: string, body?: unknown) =>
   request<T>(path, { method: 'POST', body: body instanceof FormData ? body : JSON.stringify(body ?? {}) });
 
 export const api = {
-  me: () => request<{ loggedIn: boolean }>('/api/auth/me'),
+  me: () => request<{ loggedIn: boolean; needsSetup: boolean }>('/api/auth/me'),
   login: (password: string) => post<{ ok: true }>('/api/auth/login', { password }),
+  setup: (password: string, setupCode: string) => post<{ ok: true }>('/api/auth/setup', { password, setupCode }),
+  saveBlueBubbles: (url: string, password: string) =>
+    request<{ ok: true }>('/api/settings/bluebubbles', { method: 'PUT', body: JSON.stringify({ url, password }) }),
   logout: () => post('/api/auth/logout'),
   status: () => request<Status>('/api/status'),
   threads: () => request<ThreadSummary[]>('/api/threads?limit=300'),

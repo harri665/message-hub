@@ -39,6 +39,7 @@ const TAPBACKS: Record<string, string> = {
 const TAPBACK_CODES = ['love', 'like', 'dislike', 'laugh', 'emphasize', 'question', 'emoji'];
 
 const CURSOR_KEY = 'bluebubbles.cursor';
+const SETTINGS_KEY = 'bluebubbles.settings';
 
 export class BlueBubbles {
   private socket?: Socket;
@@ -49,15 +50,21 @@ export class BlueBubbles {
     osVersion: null as string | null, lastSyncAt: null as string | null, importing: false, error: null as string | null,
   };
 
-  constructor(private log: Log) {
-    this.status.configured = !!(config.bluebubbles.url && config.bluebubbles.password);
+  /** Connection settings: from env, or saved from the web app's Settings (env wins). */
+  private conn = { url: config.bluebubbles.url, password: config.bluebubbles.password };
+  private timer?: NodeJS.Timeout;
+
+  constructor(private log: Log) {}
+
+  get currentUrl() {
+    return this.conn.url || null;
   }
 
   // ---------- HTTP ----------
 
   private url(p: string, query: Record<string, string> = {}) {
-    const u = new URL(`${config.bluebubbles.url}/api/v1${p}`);
-    u.searchParams.set('password', config.bluebubbles.password);
+    const u = new URL(`${this.conn.url}/api/v1${p}`);
+    u.searchParams.set('password', this.conn.password);
     for (const [k, v] of Object.entries(query)) u.searchParams.set(k, v);
     return u;
   }
@@ -80,14 +87,38 @@ export class BlueBubbles {
   // ---------- lifecycle ----------
 
   async start() {
+    if (!this.conn.url || !this.conn.password) {
+      const saved = await kvGet<{ url: string; password: string }>(SETTINGS_KEY);
+      if (saved) this.conn = saved;
+    }
+    this.status.configured = !!(this.conn.url && this.conn.password);
     if (!this.status.configured) {
-      this.log.warn({}, 'BlueBubbles not configured (BLUEBUBBLES_URL / BLUEBUBBLES_PASSWORD); iMessage disabled');
+      this.log.warn({}, 'BlueBubbles not configured yet; set it in the web app Settings');
       return;
     }
     this.connectSocket();
     await this.fullSync().catch((e) => this.fail(e));
     // Periodic catch-up in case socket events were missed (Messages.app in a VM can go quiet).
-    setInterval(() => this.fullSync().catch((e) => this.fail(e)), 5 * 60_000).unref();
+    this.timer = setInterval(() => this.fullSync().catch((e) => this.fail(e)), 5 * 60_000);
+    this.timer.unref();
+  }
+
+  /** Test new connection settings, save them, and reconnect. Throws if the server rejects them. */
+  async configure(url: string, password: string) {
+    const clean = url.trim().replace(/\/+$/, '');
+    const u = new URL(`${clean}/api/v1/server/info`);
+    u.searchParams.set('password', password);
+    const res = await fetch(u, { signal: AbortSignal.timeout(10_000) }).catch((e) => {
+      throw Object.assign(new Error(`Cannot reach ${clean}: ${e.message}`), { statusCode: 400 });
+    });
+    if (res.status === 401) throw Object.assign(new Error('BlueBubbles rejected that password'), { statusCode: 400 });
+    if (!res.ok) throw Object.assign(new Error(`BlueBubbles answered HTTP ${res.status}`), { statusCode: 400 });
+    await kvSet(SETTINGS_KEY, { url: clean, password });
+    this.socket?.close();
+    if (this.timer) clearInterval(this.timer);
+    this.conn = { url: clean, password };
+    this.status = { ...this.status, configured: true, connected: false, error: null };
+    this.start().catch((e) => this.fail(e));
   }
 
   private fail(e: unknown) {
@@ -97,7 +128,7 @@ export class BlueBubbles {
   }
 
   private connectSocket() {
-    const { url, password } = config.bluebubbles;
+    const { url, password } = this.conn;
     this.socket = io(url, { query: { guid: password, password }, transports: ['websocket'], reconnection: true });
     this.socket.on('connect', () => {
       this.status.connected = true;

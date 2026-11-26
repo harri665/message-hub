@@ -12,11 +12,45 @@ function QR({ code }: { code: string }) {
   return url ? <img className="qr" src={url} alt="WhatsApp link code" width={264} height={264} /> : null;
 }
 
+function BlueBubblesForm({ currentUrl, onSaved }: { currentUrl: string | null; onSaved: () => void }) {
+  const [url, setUrl] = useState(currentUrl ?? 'http://192.168.1.179:1234');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.saveBlueBubbles(url, password);
+      setPassword('');
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not connect');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form className="bb-form" onSubmit={save}>
+      <label htmlFor="bb-url">BlueBubbles server address</label>
+      <input id="bb-url" value={url} onChange={(e) => setUrl(e.target.value)} autoComplete="off" />
+      <label htmlFor="bb-pw">BlueBubbles server password</label>
+      <input id="bb-pw" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="off" />
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="row">
+        <button className="btn-primary" disabled={busy || !url || !password}>{busy ? 'Connecting' : 'Connect'}</button>
+      </div>
+    </form>
+  );
+}
+
 export function Settings({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const status = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: (q) => (q.state.data?.whatsapp.pairing ? 3000 : 15000) });
   const [notif, setNotif] = useState(typeof Notification !== 'undefined' ? Notification.permission : 'denied');
   const [busy, setBusy] = useState(false);
+  const [editBB, setEditBB] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
@@ -48,7 +82,12 @@ export function Settings({ onClose }: { onClose: () => void }) {
         <section className="setting svc-imessage">
           <h3>iMessage and SMS</h3>
           {!bb && <p className="muted">Checking</p>}
-          {bb && !bb.configured && <p>Not set up. Add the BlueBubbles server address and password to the hub's settings.</p>}
+          {bb && !bb.configured && (
+            <>
+              <p>Connect to BlueBubbles Server on the Mac to bring in iMessage and SMS.</p>
+              <BlueBubblesForm currentUrl={bb.url} onSaved={() => qc.invalidateQueries({ queryKey: ['status'] })} />
+            </>
+          )}
           {bb?.configured && (
             <>
               <p className={`state ${bb.connected ? 'ok' : 'bad'}`}>{bb.connected ? 'Connected to the Mac' : 'Cannot reach the Mac'}</p>
@@ -60,6 +99,11 @@ export function Settings({ onClose }: { onClose: () => void }) {
                 {bb.lastSyncAt && (<><dt>Last sync</dt><dd>{listTime(bb.lastSyncAt)}</dd></>)}
               </dl>
               {bb.error && <p className="form-error">{bb.error}</p>}
+              {editBB ? (
+                <BlueBubblesForm currentUrl={bb.url} onSaved={() => { setEditBB(false); qc.invalidateQueries({ queryKey: ['status'] }); }} />
+              ) : (
+                <button className="btn-quiet" onClick={() => setEditBB(true)}>Change connection</button>
+              )}
             </>
           )}
         </section>
@@ -108,7 +152,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
         </section>
 
         <footer className="modal-foot">
-          <button className="btn-quiet" onClick={() => api.logout().finally(() => qc.setQueryData(['me'], { loggedIn: false }))}>Sign out</button>
+          <button className="btn-quiet" onClick={() => api.logout().finally(() => qc.setQueryData(['me'], { loggedIn: false, needsSetup: false }))}>Sign out</button>
         </footer>
       </div>
     </div>
