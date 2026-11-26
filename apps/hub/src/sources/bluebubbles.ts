@@ -148,7 +148,9 @@ export class BlueBubbles {
       this.status.connected = false;
       this.status.error = `socket: ${e.message}`;
     });
-    const onMsg = (m: BBMessage) => this.ingest(m, false).catch((e) => this.log.error({ err: String(e) }, 'ingest failed'));
+    // iCloud backfill can also arrive as "new" events: only recent messages count as unread / notify.
+    const onMsg = (m: BBMessage) =>
+      this.ingest(m, Date.now() - (m?.dateCreated ?? 0) > 10 * 60_000).catch((e) => this.log.error({ err: String(e) }, 'ingest failed'));
     this.socket.on('new-message', onMsg);
     this.socket.on('updated-message', onMsg);
     this.socket.on('chat-read-status-changed', (d: { chatGuid: string; read: boolean }) => {
