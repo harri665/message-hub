@@ -10,6 +10,7 @@ import type { BlueBubbles } from '../sources/bluebubbles.js';
 import type { WhatsApp } from '../sources/whatsapp.js';
 import { bus, emitLive, type LiveEvent } from '../store.js';
 import { cached } from '../cache.js';
+import { approveSendRequest, listSendRequests, rejectSendRequest, sendText } from '../outbox.js';
 import { listThreads, searchMessages, threadConversations, threadMessages, type SearchFilter } from '../queries.js';
 
 const THUMB_WIDTHS = new Set([320, 640, 1280]);
@@ -185,21 +186,15 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
         const text = req.body?.text?.trim();
         if (!text) return reply.code(400).send({ error: 'text is required' });
         const conv = await pickConversation(req.params.tid, req.body.conversationId);
-        const replyTo = req.body.replyToId
-          ? await q1(
-              `select m.source_id, m.body, m.from_me, h.address from message m left join handle h on h.id = m.sender_handle_id
-               where m.id = $1 and m.conversation_id = $2`,
-              [req.body.replyToId, conv.id],
-            )
-          : undefined;
-        if (conv.network === 'apple') {
-          await bb.sendText(conv.source_id, text, replyTo?.source_id);
-        } else {
-          await wa.sendText(conv.source_id, text, replyTo ? { id: replyTo.source_id, sender: replyTo.from_me ? '' : replyTo.address ?? '', text: replyTo.body ?? '' } : null);
-        }
+        await sendText(bb, wa, conv, text, req.body.replyToId);
         return { ok: true };
       },
     );
+
+    // ---------- messages Claude asked to send: only a signed-in user can approve them ----------
+    r.get<{ Querystring: { status?: string } }>('/api/send-requests', async (req) => listSendRequests(req.query.status || undefined));
+    r.post<{ Params: { id: string } }>('/api/send-requests/:id/approve', async (req) => approveSendRequest(bb, wa, Number(req.params.id)));
+    r.post<{ Params: { id: string } }>('/api/send-requests/:id/reject', async (req) => rejectSendRequest(Number(req.params.id)));
 
     r.post<{ Params: { tid: string } }>('/api/threads/:tid/send-file', async (req, reply) => {
       const part = await req.file({ limits: { fileSize: 100 * 1024 * 1024 } });

@@ -48,7 +48,8 @@ export type LiveEvent =
   | { type: 'message'; conversationId: number; messageId: number; fromMe: boolean; historical: boolean }
   | { type: 'message-updated'; conversationId: number; messageId: number }
   | { type: 'conversation-updated'; conversationId: number }
-  | { type: 'status'; source: 'bluebubbles' | 'whatsapp' };
+  | { type: 'status'; source: 'bluebubbles' | 'whatsapp' }
+  | { type: 'send-request' };
 
 export const bus = new EventEmitter();
 bus.setMaxListeners(100);

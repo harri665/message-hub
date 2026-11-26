@@ -63,7 +63,7 @@ function CopyField({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** Access tokens for the MCP server, so Claude can search and read messages. */
+/** Access tokens for the MCP server, so Claude can search and read messages and ask to send them (you approve each one). */
 function ClaudeAccess() {
   const qc = useQueryClient();
   const list = useQuery({ queryKey: ['mcp-tokens'], queryFn: api.mcpTokens });
@@ -91,7 +91,7 @@ function ClaudeAccess() {
     <div className="group">
       <div className="group-body">
         <p style={{ margin: 0 }}>
-          Let Claude search and read your messages through MCP. Access is read-only: Claude can't send anything.
+          Let Claude search and read your messages through MCP. Claude can also ask to send a message, but nothing is sent until you approve it here in Message Hub. Every request waits for you to choose Send or Don't send.
         </p>
         {created ? (
           <>

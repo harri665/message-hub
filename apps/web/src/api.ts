@@ -58,6 +58,21 @@ export interface MessagePage { before?: string; after?: string; around?: number 
 
 export interface McpToken { id: string; name: string; createdAt: string; lastUsedAt: string | null }
 
+export interface SendRequest {
+  id: number;
+  tid: string;
+  thread_title: string | null;
+  service: Service;
+  text: string;
+  requested_by: string;
+  status: 'pending' | 'approved' | 'rejected' | 'sent' | 'failed' | 'expired';
+  error: string | null;
+  created_at: string;
+  reply_to_message_id: number | null;
+  reply_to_body: string | null;
+  reply_to_from_me: boolean | null;
+}
+
 export type SearchService = 'apple' | 'whatsapp' | '';
 
 export interface Status {
@@ -130,6 +145,9 @@ export const api = {
   mcpTokens: () => request<McpToken[]>('/api/mcp/tokens'),
   createMcpToken: (name: string) => post<{ id: string; name: string; token: string }>('/api/mcp/tokens', { name }),
   deleteMcpToken: (id: string) => request<{ ok: true }>(`/api/mcp/tokens/${id}`, { method: 'DELETE' }),
+  sendRequests: (status = 'pending') => request<SendRequest[]>(`/api/send-requests?status=${status}`),
+  approveSendRequest: (id: number) => post<SendRequest>(`/api/send-requests/${id}/approve`),
+  rejectSendRequest: (id: number) => post<SendRequest>(`/api/send-requests/${id}/reject`),
   waPair: () => post('/api/whatsapp/pair'),
   waLogout: () => post('/api/whatsapp/logout'),
 };

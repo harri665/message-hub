@@ -1,5 +1,6 @@
 // MCP server: lets Claude (Claude Code, claude.ai connectors, other MCP clients) search and read the inbox.
-// Read-only on purpose. Access is by tokens created in the web app's Settings; only their hashes are stored.
+// It can read messages, and it can ask to send one, but a request only sits in the approval queue (outbox.ts): nothing is
+// sent until the signed-in user approves it in the web app. Access is by tokens created in the web app's Settings; only their hashes are stored.
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -8,6 +9,7 @@ import { z } from 'zod';
 import { requireSession } from './auth.js';
 import { config } from './config.js';
 import { kvGet, kvSet, q } from './db.js';
+import { createSendRequest, getSendRequest, listSendRequests, MAX_TEXT, type SendRequest } from './outbox.js';
 import { listThreads, searchMessages, threadConversations, threadMessages } from './queries.js';
 
 // ---------- tokens ----------
@@ -19,18 +21,19 @@ const TOKEN_PREFIX = 'mh_';
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 const tokens = async () => (await kvGet<McpToken[]>(TOKENS_KEY)) ?? [];
 
-async function checkToken(token: string | undefined): Promise<boolean> {
-  if (!token?.startsWith(TOKEN_PREFIX)) return false;
+/** The matching token's name, or null if the token isn't valid. */
+async function checkToken(token: string | undefined): Promise<string | null> {
+  if (!token?.startsWith(TOKEN_PREFIX)) return null;
   const hash = Buffer.from(sha256(token), 'hex');
   const list = await tokens();
   const hit = list.find((t) => timingSafeEqual(Buffer.from(t.hash, 'hex'), hash));
-  if (!hit) return false;
+  if (!hit) return null;
   // Record use at most once a minute.
   if (!hit.lastUsedAt || Date.now() - Date.parse(hit.lastUsedAt) > 60_000) {
     hit.lastUsedAt = new Date().toISOString();
     await kvSet(TOKENS_KEY, list);
   }
-  return true;
+  return hit.name;
 }
 
 /** Hides tokens that appear in a URL path, so they never reach the logs. */
@@ -75,15 +78,30 @@ const textResult = (text: string) => ({ content: [{ type: 'text' as const, text 
 
 const isoDate = z.string().describe('Date or date-time, e.g. 2026-11-01 or 2026-11-01T18:00:00-07:00');
 
-function buildServer() {
+function sendRequestText(r: SendRequest) {
+  const to = `"${r.thread_title ?? 'Unknown'}" (${r.tid}) on ${SERVICE[r.service] ?? r.service}`;
+  const head = `Send request ${r.id} to ${to}, requested ${fmtTime(r.created_at)}: "${clip(r.text, 300)}"`;
+  switch (r.status) {
+    case 'pending': return `${head}\nStatus: pending. Waiting for the user to approve it in Message Hub. Nothing has been sent.`;
+    case 'approved': return `${head}\nStatus: approved. The user approved it and it is being sent.`;
+    case 'sent': return `${head}\nStatus: sent at ${fmtTime(r.sent_at)}.${r.message_id ? ` Message id ${r.message_id}.` : ''}`;
+    case 'rejected': return `${head}\nStatus: rejected. The user chose not to send it. Nothing was sent.`;
+    case 'expired': return `${head}\nStatus: expired. The user didn't approve it within 24 hours. Nothing was sent.`;
+    default: return `${head}\nStatus: failed. The user approved it but sending failed: ${r.error ?? 'unknown error'}. Nothing was delivered.`;
+  }
+}
+
+function buildServer(requestedBy: string) {
   const server = new McpServer(
     { name: 'message-hub', version: '0.1.0' },
     {
       instructions:
-        "Read-only access to the user's messages: iMessage, SMS and RCS from their iPhone, and WhatsApp, merged by person. " +
+        "Access to the user's messages: iMessage, SMS and RCS from their iPhone, and WhatsApp, merged by person. " +
         'Conversation ids look like p12 (all 1:1 chats with one person across services) or c34 (a group). ' +
         `Times are shown in ${config.timeZone} as YYYY-MM-DD HH:MM. Numbers in [brackets] are message ids. ` +
-        'Find a person with list_conversations(match), search text with search_messages, then read context with read_conversation.',
+        'Find a person with list_conversations(match), search text with search_messages, then read context with read_conversation. ' +
+        'You can never send a message directly. request_send_message only queues a request; the user must approve it in the Message Hub web app, ' +
+        'and nothing is sent before then. Tell the user what you asked to send, and use get_send_request to see what they decided.',
     },
   );
 
@@ -189,6 +207,67 @@ function buildServer() {
     },
   );
 
+  server.registerTool(
+    'request_send_message',
+    {
+      title: 'Ask to send a message',
+      description:
+        'Ask to send a text message in a conversation. This does NOT send anything: the message is only sent after the user approves it ' +
+        'in the Message Hub web app, and they can decline. Requests expire after 24 hours. Show the user exactly what you asked to send. ' +
+        'Returns a request id; check it later with get_send_request.',
+      inputSchema: {
+        conversation: z.string().regex(/^[pc]\d+$/).describe('Conversation id from list_conversations, e.g. p12'),
+        text: z.string().trim().min(1).max(MAX_TEXT).describe('The exact message text'),
+        service: z.enum(['imessage', 'sms', 'rcs', 'whatsapp']).optional()
+          .describe('Only needed when the conversation has both WhatsApp and iMessage/SMS/RCS chats. Defaults to the most recently used.'),
+        reply_to_message_id: z.number().int().optional().describe('Message id (from read_conversation) to reply to'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    },
+    async (a) => {
+      try {
+        const r = await createSendRequest({
+          tid: a.conversation, text: a.text, service: a.service, replyToMessageId: a.reply_to_message_id, requestedBy,
+        });
+        return textResult(
+          `Nothing has been sent yet. Request ${r.id} is waiting for the user to approve it in the Message Hub web app.\n` +
+          `To: "${r.thread_title ?? 'Unknown'}" (${r.tid}) on ${SERVICE[r.service] ?? r.service}\nMessage: ${r.text}\n` +
+          `Tell the user to open Message Hub and choose Send or Don't send. Check the outcome with get_send_request(${r.id}).`,
+        );
+      } catch (e) {
+        return { ...textResult(e instanceof Error ? e.message : String(e)), isError: true };
+      }
+    },
+  );
+
+  server.registerTool(
+    'get_send_request',
+    {
+      title: 'Check a send request',
+      description: 'Status of a message you asked to send: pending (waiting for the user), sent, rejected, expired or failed.',
+      inputSchema: { id: z.number().int().describe('Request id from request_send_message') },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (a) => {
+      const r = await getSendRequest(a.id);
+      return r ? textResult(sendRequestText(r)) : { ...textResult(`No send request ${a.id}.`), isError: true };
+    },
+  );
+
+  server.registerTool(
+    'list_send_requests',
+    {
+      title: 'List send requests',
+      description: 'Recent requests to send messages and what the user decided, newest first.',
+      inputSchema: { status: z.enum(['pending', 'approved', 'rejected', 'sent', 'failed', 'expired']).optional() },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (a) => {
+      const rows = await listSendRequests(a.status, 20);
+      return textResult(rows.length ? rows.map(sendRequestText).join('\n\n') : 'No send requests.');
+    },
+  );
+
   return server;
 }
 
@@ -197,12 +276,13 @@ function buildServer() {
 export function registerMcp(app: FastifyInstance) {
   const handle = async (req: FastifyRequest<{ Params: { token?: string } }>, reply: FastifyReply) => {
     const header = req.headers.authorization?.match(/^Bearer\s+(\S+)$/i)?.[1];
-    if (!(await checkToken(header ?? req.params.token))) {
+    const tokenName = await checkToken(header ?? req.params.token);
+    if (!tokenName) {
       await new Promise((r) => setTimeout(r, 500));
       return reply.code(401).send({ error: 'A valid Message Hub access token is required. Create one in Settings.' });
     }
     // Stateless: a fresh server and transport per request, closed when the response ends.
-    const server = buildServer();
+    const server = buildServer(tokenName);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     reply.raw.on('close', () => {
       transport.close().catch(() => {});

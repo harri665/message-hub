@@ -638,3 +638,26 @@ video.att-media { object-fit: contain; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------- messages Claude asked to send ---------- */
+.approvals {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  width: min(520px, calc(100% - 24px));
+  max-height: calc(100dvh - 28px);
+  overflow-y: auto;
+  border-radius: 22px;
+  padding: 14px 16px 6px;
+  animation: rise 0.24s cubic-bezier(0.2, 0.9, 0.3, 1.15);
+}
+.approvals h2 { font-size: 15px; font-weight: 700; margin: 0 0 2px; }
+.approvals .note { margin-bottom: 8px; }
+.approval { padding: 12px 0; border-top: 0.5px solid var(--sep); display: grid; gap: 8px; }
+.approval-to { font-weight: 600; font-size: 14px; }
+.approval-to .value { color: var(--sub); font-weight: 400; font-size: 12.5px; }
+.approval-text { margin: 0; padding: 8px 12px; border-radius: 14px; background: var(--fill); white-space: pre-wrap; overflow-wrap: anywhere; }
+.approval-reply { margin: 0; font-size: 12.5px; color: var(--sub); overflow-wrap: anywhere; }
+.approval-actions { display: flex; gap: 8px; justify-content: flex-end; }

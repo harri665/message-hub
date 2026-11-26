@@ -18,6 +18,7 @@ type LiveMsg =
   | { type: 'message-updated'; conversationId: number; messageId: number }
   | { type: 'conversation-updated'; conversationId: number }
   | { type: 'status'; source: string }
+  | { type: 'send-request' }
   | { type: 'refresh' };
 
 /** Keeps a WebSocket to the hub open and turns its events into cache invalidations and notifications. */
@@ -50,6 +51,7 @@ export function useLive(enabled: boolean, openTid: string | null) {
         retry = 1000;
         invalidate(['threads']);
         invalidate(['messages']);
+        invalidate(['send-requests']);
       };
       ws.onmessage = (e) => {
         const ev = JSON.parse(e.data) as LiveMsg;
@@ -68,6 +70,11 @@ export function useLive(enabled: boolean, openTid: string | null) {
             break;
           case 'status':
             invalidate(['status']);
+            break;
+          case 'send-request':
+            invalidate(['send-requests']);
+            invalidate(['messages']);
+            invalidate(['threads']);
             break;
           case 'refresh':
             invalidate(['threads']);

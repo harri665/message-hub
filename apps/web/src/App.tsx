@@ -7,6 +7,7 @@ import { Login } from './components/Login.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { ThreadView } from './components/ThreadView.tsx';
 import { Settings } from './components/Settings.tsx';
+import { SendApprovals } from './components/SendApprovals.tsx';
 
 interface Route { tid: string | null; focus: number | null }
 
@@ -65,6 +66,7 @@ export function App() {
           </div>
         )}
       </main>
+      <SendApprovals />
       {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
     </div>
   );
