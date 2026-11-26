@@ -22,6 +22,7 @@ interface BBAttachment {
   width?: number | null; height?: number | null; hideAttachment?: boolean; uti?: string | null;
 }
 interface BBMessage {
+  originalROWID?: number;
   guid: string; text?: string | null; subject?: string | null; isFromMe: boolean;
   handle?: BBHandle | null; chats?: BBChat[]; attachments?: BBAttachment[];
   dateCreated: number; dateDelivered?: number | null; dateRead?: number | null;
@@ -38,7 +39,8 @@ const TAPBACKS: Record<string, string> = {
 };
 const TAPBACK_CODES = ['love', 'like', 'dislike', 'laugh', 'emphasize', 'question', 'emoji'];
 
-const CURSOR_KEY = 'bluebubbles.cursor';
+const ROWID_KEY = 'bluebubbles.rowid';
+const res_total = (res: any): number => Number(res?.metadata?.total ?? res?.data?.length ?? 0);
 const SETTINGS_KEY = 'bluebubbles.settings';
 
 export class BlueBubbles {
@@ -226,38 +228,71 @@ export class BlueBubbles {
     }
   }
 
+  /**
+   * Walk chat.db by ROWID, not by date: Messages in iCloud backfills old history with new
+   * (higher) ROWIDs but old dates, so a date cursor would skip it. Rows inside a ROWID window
+   * never change, which keeps offset paging stable while new messages arrive.
+   */
   private async syncMessages() {
-    const cursor = (await kvGet<number>(CURSOR_KEY)) ?? 0;
-    const initial = cursor === 0;
-    this.status.importing = initial;
-    let max = cursor;
+    const WINDOW = 5000;
+    const PAGE = 1000;
+    let cursor = (await kvGet<number>(ROWID_KEY)) ?? 0;
+    let maxSeen = cursor;
+    this.status.importing = cursor === 0;
     let count = 0;
-    // Re-read a small overlap; inserts are idempotent.
-    const after = Math.max(0, cursor - 60_000);
-    for (let offset = 0; ; offset += 1000) {
-      const res = await this.api('/message/query', {
+    const query = (where: string, args: Record<string, number>, offset: number, limit: number) =>
+      this.api('/message/query', {
         body: {
-          limit: 1000, offset, after, sort: 'ASC',
+          limit, offset, sort: 'ASC',
+          where: [{ statement: where, args }],
           with: ['chat', 'chat.participants', 'attachment', 'handle', 'attributedBody'],
         },
       });
-      const msgs: BBMessage[] = res.data ?? [];
-      for (const m of msgs) {
-        await this.ingest(m, initial);
-        if (m.dateCreated > max) max = m.dateCreated;
+
+    for (;;) {
+      const lo = cursor;
+      const hi = cursor + WINDOW;
+      let got = 0;
+      for (let offset = 0; ; offset += PAGE) {
+        const res = await query('message.ROWID > :lo AND message.ROWID <= :hi', { lo, hi }, offset, PAGE);
+        const msgs: BBMessage[] = res.data ?? [];
+        for (const m of msgs) {
+          // Anything older than 10 minutes is history: no unread bump or notification.
+          await this.ingest(m, Date.now() - m.dateCreated > 10 * 60_000);
+          if ((m.originalROWID ?? 0) > maxSeen) maxSeen = m.originalROWID!;
+        }
+        got += msgs.length;
+        if (msgs.length < PAGE) break;
       }
-      count += msgs.length;
-      if (msgs.length) await kvSet(CURSOR_KEY, max);
-      if (msgs.length < 1000) break;
-      if (initial) this.log.info({ count }, 'importing iMessage history');
+      count += got;
+      if (got === 0) {
+        // An empty window can be a gap (deleted rows); stop only when nothing lies beyond it.
+        const rest = await query('message.ROWID > :hi', { hi }, 0, 1);
+        if (!(res_total(rest) > 0)) break;
+      }
+      cursor = hi;
+      // Persist the highest ROWID actually seen, never the window edge, so later rows are not skipped.
+      await kvSet(ROWID_KEY, maxSeen);
+      if (this.status.importing) this.log.info({ count, rowid: maxSeen }, 'importing iMessage history');
     }
-    if (count) this.log.info({ count, initial }, 'iMessage sync complete');
+    await this.retryOrphanReactions();
+    if (count) this.log.info({ count }, 'iMessage sync complete');
     this.status.importing = false;
+  }
+
+  /** Tapbacks whose target message had not been imported yet when they arrived. */
+  private orphans = new Map<string, { m: BBMessage; tries: number }>();
+
+  private async retryOrphanReactions() {
+    for (const [guid, o] of this.orphans) {
+      this.orphans.delete(guid);
+      if (o.tries < 5) await this.ingest(o.m, true, o.tries + 1);
+    }
   }
 
   // ---------- ingest ----------
 
-  private async ingest(m: BBMessage, historical: boolean) {
+  private async ingest(m: BBMessage, historical: boolean, tries = 0) {
     if (!m?.guid) return;
     let chat = m.chats?.[0];
     if (!chat?.guid) return;
@@ -270,7 +305,9 @@ export class BlueBubbles {
     if (m.associatedMessageGuid && m.associatedMessageType != null && m.associatedMessageType !== 0 && m.associatedMessageType !== '0') {
       const target = m.associatedMessageGuid.replace(/^(?:p:\d+\/|bp:)/, '');
       const reaction = parseTapback(m.associatedMessageType, m.associatedMessageEmoji);
-      if (reaction) await setReaction('apple', target, sender, reaction.remove ? null : reaction.emoji);
+      if (reaction && !(await setReaction('apple', target, sender, reaction.remove ? null : reaction.emoji))) {
+        this.orphans.set(m.guid, { m, tries });
+      }
       return;
     }
 

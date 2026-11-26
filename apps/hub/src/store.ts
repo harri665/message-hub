@@ -225,9 +225,9 @@ async function findMessage(network: Network, sourceId: string) {
 }
 
 /** Set or clear (emoji = null) one sender's reaction on a message. */
-export async function setReaction(network: Network, targetSourceId: string, sender: HandleInput | null, emoji: string | null) {
+export async function setReaction(network: Network, targetSourceId: string, sender: HandleInput | null, emoji: string | null): Promise<boolean> {
   const target = await findMessage(network, targetSourceId);
-  if (!target) return;
+  if (!target) return false;
   const handleId = sender ? await upsertHandle(network, sender) : null;
   const senderKey = handleId ? String(handleId) : 'me';
   if (emoji) {
@@ -240,6 +240,7 @@ export async function setReaction(network: Network, targetSourceId: string, send
     await q('delete from reaction where message_id = $1 and sender_key = $2', [target.id, senderKey]);
   }
   emitLive({ type: 'message-updated', conversationId: target.conversation_id, messageId: target.id });
+  return true;
 }
 
 export async function editMessage(network: Network, targetSourceId: string, body: string | null, at: Date) {
