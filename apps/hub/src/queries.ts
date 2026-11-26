@@ -1,4 +1,5 @@
 // Read queries shared by the web API and the MCP server.
+import { cached } from './cache.js';
 import { q, q1 } from './db.js';
 
 export interface ConvRow {
@@ -31,7 +32,11 @@ export const MESSAGE_JOINS = `
   left join person_name rtn on rtn.person_id = rth.person_id`;
 
 /** The conversations behind a thread id: "p<person>" merges a person's 1:1 chats on every service, "c<id>" is one group. */
-export async function threadConversations(tid: string): Promise<ConvRow[]> {
+export function threadConversations(tid: string): Promise<ConvRow[]> {
+  return cached(`convs:${tid}`, () => loadThreadConversations(tid));
+}
+
+async function loadThreadConversations(tid: string): Promise<ConvRow[]> {
   const id = Number(tid.slice(1));
   if (!Number.isFinite(id)) return [];
   if (tid.startsWith('p')) {
@@ -52,71 +57,97 @@ export async function threadConversations(tid: string): Promise<ConvRow[]> {
 
 export interface ThreadFilter { limit?: number; offset?: number; unreadOnly?: boolean; match?: string; tid?: string }
 
-/** Threads newest first. `match` keeps threads whose name, member names or addresses contain the text. */
+/**
+ * Threads newest first. `match` keeps threads whose name, member names or addresses contain the text.
+ * Names and addresses are resolved once per query (materialized CTEs) rather than per thread, and the last message
+ * is looked up only for the page being returned.
+ */
 export function listThreads(f: ThreadFilter = {}) {
   const limit = Math.min(f.limit ?? 100, 500);
   const match = f.match?.trim() ? `%${f.match.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
   const digits = f.match?.replace(/\D/g, '') ?? '';
-  return q(
-    `with threads as (
-       select ct.tid,
-              min(case when ct.tid like 'p%' then substr(ct.tid, 2)::bigint end) as person_id,
-              bool_or(c.is_group) as is_group,
-              max(c.last_message_at) as last_at,
-              sum(c.unread_count)::int as unread,
-              array_agg(c.id) as conversation_ids,
-              array_agg(distinct c.network) as networks,
-              max(c.title) filter (where c.is_group) as group_title
-       from conversation c join conversation_thread ct on ct.conversation_id = c.id
-       where not c.archived
-       group by ct.tid
-     )
-     select t.tid, t.is_group, t.last_at, t.unread, t.conversation_ids, t.networks,
-            coalesce(t.group_title, pn.name, pa.address, gm.names, 'Unknown') as title,
-            lm.body as last_body, lm.from_me as last_from_me, lm.service as last_service, lm.kind as last_kind,
-            lm.unsent as last_unsent, lm.has_attachment as last_has_attachment, lm.sender_name as last_sender_name
-     from threads t
-     left join person_name pn on pn.person_id = t.person_id
-     left join person_address pa on pa.person_id = t.person_id
-     left join lateral (
-       select string_agg(coalesce(mpn.name, mpa.address, h.address), ', ') as names
-       from (select h.* from conversation_member cm join handle h on h.id = cm.handle_id
-             where t.is_group and cm.conversation_id = t.conversation_ids[1] limit 5) h
-       left join person_name mpn on mpn.person_id = h.person_id
-       left join person_address mpa on mpa.person_id = h.person_id
-     ) gm on true
-     left join lateral (
-       select m.body, m.from_me, m.service, m.kind, m.unsent,
-              exists(select 1 from attachment a where a.message_id = m.id) as has_attachment,
-              coalesce(spn.name, sh.address) as sender_name
-       from message m
-       left join handle sh on sh.id = m.sender_handle_id
-       left join person_name spn on spn.person_id = sh.person_id
-       where m.conversation_id = any(t.conversation_ids)
-       order by m.sent_at desc limit 1
-     ) lm on true
-     where t.last_at is not null
-       and (not $3 or t.unread > 0)
-       and ($6::text is null or t.tid = $6)
-       and ($4::text is null
-            or coalesce(t.group_title, pn.name, pa.address, gm.names, '') ilike $4
-            or exists (select 1 from conversation_member cm join handle h on h.id = cm.handle_id
-                       left join person_name hpn on hpn.person_id = h.person_id
-                       where cm.conversation_id = any(t.conversation_ids)
-                         and (hpn.name ilike $4 or h.display_name ilike $4 or h.address ilike $4
-                              or (length($5) >= 4 and regexp_replace(h.address, '\\D', '', 'g') like '%' || $5 || '%'))))
-     order by t.last_at desc
-     limit $1 offset $2`,
-    [limit, f.offset ?? 0, !!f.unreadOnly, match, digits, f.tid ?? null],
-  );
+  const args = [limit, f.offset ?? 0, !!f.unreadOnly, match, digits, f.tid ?? null];
+  return cached(`threads:${JSON.stringify(args)}`, () => q(THREADS_SQL, args));
 }
+
+const THREADS_SQL = `
+    with pn as materialized (select * from person_name),
+         pa as materialized (select * from person_address),
+         ct as materialized (select * from conversation_thread),
+         threads as (
+           select ct.tid,
+                  min(case when ct.tid like 'p%' then substr(ct.tid, 2)::bigint end) as person_id,
+                  bool_or(c.is_group) as is_group,
+                  max(c.last_message_at) as last_at,
+                  sum(c.unread_count)::int as unread,
+                  array_agg(c.id order by c.last_message_at desc nulls last) as conversation_ids,
+                  array_agg(distinct c.network) as networks,
+                  max(c.title) filter (where c.is_group) as group_title
+           from conversation c join ct on ct.conversation_id = c.id
+           where not c.archived
+           group by ct.tid
+           having max(c.last_message_at) is not null
+         ),
+         gm as (
+           select t.tid, string_agg(coalesce(mpn.name, mpa.address, h.address), ', ') as names
+           from threads t
+           cross join lateral (select h.* from conversation_member cm join handle h on h.id = cm.handle_id
+                               where cm.conversation_id = t.conversation_ids[1] order by h.id limit 5) h
+           left join pn mpn on mpn.person_id = h.person_id
+           left join pa mpa on mpa.person_id = h.person_id
+           where t.is_group
+           group by t.tid
+         ),
+         named as (
+           select t.*, coalesce(t.group_title, pn.name, pa.address, gm.names, 'Unknown') as title
+           from threads t
+           left join pn on pn.person_id = t.person_id
+           left join pa on pa.person_id = t.person_id
+           left join gm on gm.tid = t.tid
+         ),
+         matched as (
+           select distinct ct.tid from conversation_member cm
+           join handle h on h.id = cm.handle_id
+           join ct on ct.conversation_id = cm.conversation_id
+           left join pn hpn on hpn.person_id = h.person_id
+           where $4::text is not null
+             and (hpn.name ilike $4 or h.display_name ilike $4 or h.address ilike $4
+                  or (length($5) >= 4 and regexp_replace(h.address, '\\D', '', 'g') like '%' || $5 || '%'))
+         ),
+         page as (
+           select n.* from named n
+           where (not $3 or n.unread > 0)
+             and ($6::text is null or n.tid = $6)
+             and ($4::text is null or n.title ilike $4 or n.tid in (select tid from matched))
+           order by n.last_at desc
+           limit $1 offset $2
+         )
+    select p.tid, p.is_group, p.last_at, p.unread, p.conversation_ids, p.networks, p.title,
+           lm.body as last_body, lm.from_me as last_from_me, lm.service as last_service, lm.kind as last_kind,
+           lm.unsent as last_unsent, lm.has_attachment as last_has_attachment, lm.sender_name as last_sender_name
+    from page p
+    left join lateral (
+      select m.body, m.from_me, m.service, m.kind, m.unsent,
+             exists(select 1 from attachment a where a.message_id = m.id) as has_attachment,
+             coalesce(spn.name, sh.address) as sender_name
+      from unnest(p.conversation_ids) as cid
+      cross join lateral (select * from message m where m.conversation_id = cid order by m.sent_at desc limit 1) m
+      left join handle sh on sh.id = m.sender_handle_id
+      left join pn spn on spn.person_id = sh.person_id
+      order by m.sent_at desc limit 1
+    ) lm on true
+    order by p.last_at desc`;
 
 // ---------- messages ----------
 
 export interface MessagePage { before?: string; after?: string; around?: number; limit?: number }
 
 /** Messages of a thread, oldest first: the newest page, a page before/after a time, or a window around one message. */
-export async function threadMessages(convIds: number[], p: MessagePage = {}) {
+export function threadMessages(convIds: number[], p: MessagePage = {}) {
+  return cached(`messages:${convIds.join(',')}:${JSON.stringify(p)}`, () => loadThreadMessages(convIds, p));
+}
+
+async function loadThreadMessages(convIds: number[], p: MessagePage) {
   const limit = Math.min(p.limit ?? 60, 200);
   const page = (where: string, order: 'asc' | 'desc', args: unknown[], n: number) =>
     q(
@@ -176,7 +207,11 @@ export interface SearchFilter {
 }
 
 /** Full-text search over message bodies, newest first, with a highlighted snippet (hits wrapped in ⟦ ⟧). */
-export async function searchMessages(f: SearchFilter) {
+export function searchMessages(f: SearchFilter) {
+  return cached(`search:${JSON.stringify(f)}`, () => loadSearch(f));
+}
+
+async function loadSearch(f: SearchFilter) {
   const tsq = toTsQuery(f.text);
   if (!tsq) return [];
   let convIds: number[] | null = null;

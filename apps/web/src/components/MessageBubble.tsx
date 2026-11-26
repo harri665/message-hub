@@ -26,6 +26,8 @@ function ImageAttachment({ a, src, box, onOpenImage }: {
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const url = attempt ? `${src}?retry=${attempt}` : src;
+  // Bubbles show a 640px-wide copy made by the server; the full photo loads only when opened.
+  const thumb = `${url}${url.includes('?') ? '&' : '?'}w=640`;
   if (failed) {
     return (
       <div className="att-missing" style={{ ...box, aspectRatio: undefined }}>
@@ -38,7 +40,7 @@ function ImageAttachment({ a, src, box, onOpenImage }: {
   }
   return (
     <button type="button" className="att-media" style={box} onClick={() => onOpenImage(url)} aria-label={`Open ${a.filename ?? 'photo'}`}>
-      <img src={url} alt={a.filename ?? 'Image'} loading="lazy" onError={() => setFailed(true)} />
+      <img src={thumb} alt={a.filename ?? 'Image'} loading="lazy" decoding="async" onError={() => setFailed(true)} />
     </button>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './api.ts';
 import { useLive } from './live.ts';
+import { clearLocalData } from './localCache.ts';
 import { Login } from './components/Login.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { ThreadView } from './components/ThreadView.tsx';
@@ -25,7 +26,8 @@ export function App() {
 
   useEffect(() => {
     const onHash = () => setRoute(readHash());
-    const onLoggedOut = () => qc.invalidateQueries({ queryKey: ['me'] });
+    // Session ended (or signed out elsewhere): drop what this device has stored, then show the login.
+    const onLoggedOut = () => clearLocalData().finally(() => qc.invalidateQueries({ queryKey: ['me'] }));
     window.addEventListener('hashchange', onHash);
     window.addEventListener('mh:logged-out', onLoggedOut);
     return () => {

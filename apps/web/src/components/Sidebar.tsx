@@ -1,6 +1,6 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import { api, SERVICE_LABEL, type ThreadSummary } from '../api.ts';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+import { api, SERVICE_LABEL, type MessagePage, type ThreadSummary } from '../api.ts';
 import { initials, listTime, serviceClass } from '../format.ts';
 import { Highlight } from './Highlight.tsx';
 
@@ -28,7 +28,19 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
   onOpen: (tid: string, messageId?: number) => void;
   onSettings: () => void;
 }) {
+  const qc = useQueryClient();
   const threads = useQuery({ queryKey: ['threads'], queryFn: api.threads, refetchInterval: 60_000 });
+  // Pointing at a conversation starts loading it, so it's usually ready by the time it's clicked.
+  const prefetch = (tid: string) => {
+    qc.prefetchQuery({ queryKey: ['thread', tid], queryFn: () => api.thread(tid) });
+    qc.prefetchInfiniteQuery({
+      queryKey: ['messages', tid, 'latest'],
+      queryFn: ({ pageParam }: { pageParam: MessagePage }) => api.messages(tid, pageParam),
+      initialPageParam: {} as MessagePage,
+      // Same paging rule as the conversation view (only the first page is fetched here).
+      getNextPageParam: (last: { sent_at: string }[]) => (last.length < 60 ? undefined : { before: last[0].sent_at }),
+    });
+  };
   const status = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 30_000 });
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
@@ -124,6 +136,8 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
             key={t.tid}
             className={`thread-row ${t.tid === activeTid ? 'active' : ''} ${t.unread ? 'unread' : ''}`}
             onClick={() => onOpen(t.tid)}
+            onPointerEnter={() => prefetch(t.tid)}
+            onFocus={() => prefetch(t.tid)}
             aria-current={t.tid === activeTid ? 'page' : undefined}
           >
             <span className={`avatar ${t.is_group ? 'group' : ''}`} aria-hidden="true">{initials(t.title)}</span>

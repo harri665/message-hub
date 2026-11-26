@@ -1,5 +1,7 @@
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 import Fastify from 'fastify';
+import compress from '@fastify/compress';
 import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
@@ -26,6 +28,8 @@ const app = Fastify({
 await migrate((m) => app.log.info(m));
 fs.mkdirSync(config.attachmentsDir, { recursive: true });
 
+// JSON and the app's own files compress well; images and video are skipped (already compressed).
+await app.register(compress, { global: true, threshold: 1024, encodings: ['br', 'gzip'], brotliOptions: { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 } } });
 await app.register(cookie);
 await app.register(multipart, { limits: { fileSize: 100 * 1024 * 1024, files: 1 } });
 await app.register(websocket);

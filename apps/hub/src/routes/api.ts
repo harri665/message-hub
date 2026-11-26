@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import sharp from 'sharp';
 import type { FastifyInstance } from 'fastify';
 import type { WebSocket } from 'ws';
 import { COOKIE, requireSession, sessionValid } from '../auth.js';
@@ -8,7 +9,34 @@ import { q, q1 } from '../db.js';
 import type { BlueBubbles } from '../sources/bluebubbles.js';
 import type { WhatsApp } from '../sources/whatsapp.js';
 import { bus, emitLive, type LiveEvent } from '../store.js';
+import { cached } from '../cache.js';
 import { listThreads, searchMessages, threadConversations, threadMessages, type SearchFilter } from '../queries.js';
+
+const THUMB_WIDTHS = new Set([320, 640, 1280]);
+const thumbsInflight = new Map<string, Promise<string>>();
+
+/** Returns the relative path of a resized WebP copy of an image attachment, creating it if needed. */
+function thumbnail(id: number, rel: string, width: number): Promise<string> {
+  const out = path.posix.join('thumbs', `${id}-${width}.webp`);
+  const abs = path.join(config.attachmentsDir, out);
+  if (fs.existsSync(abs)) return Promise.resolve(out);
+  let p = thumbsInflight.get(out);
+  if (!p) {
+    p = (async () => {
+      await fs.promises.mkdir(path.dirname(abs), { recursive: true });
+      const tmp = `${abs}.${process.pid}.tmp`;
+      await sharp(path.join(config.attachmentsDir, rel), { failOn: 'none' })
+        .rotate()
+        .resize({ width, withoutEnlargement: true })
+        .webp({ quality: 78 })
+        .toFile(tmp);
+      await fs.promises.rename(tmp, abs);
+      return out;
+    })().finally(() => thumbsInflight.delete(out));
+    thumbsInflight.set(out, p);
+  }
+  return p;
+}
 
 export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: WhatsApp) {
   // ---------- live updates ----------
@@ -79,10 +107,15 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
     );
 
     r.get<{ Params: { tid: string } }>('/api/threads/:tid', async (req, reply) => {
-      const convs = await threadConversations(req.params.tid);
-      if (!convs.length) return reply.code(404).send({ error: 'thread not found' });
+      const detail = await cached(`thread:${req.params.tid}`, () => threadDetail(req.params.tid));
+      return detail ?? reply.code(404).send({ error: 'thread not found' });
+    });
+
+    const threadDetail = async (tid: string) => {
+      const convs = await threadConversations(tid);
+      if (!convs.length) return null;
       const isGroup = convs[0].is_group;
-      const personId = req.params.tid.startsWith('p') ? Number(req.params.tid.slice(1)) : null;
+      const personId = tid.startsWith('p') ? Number(tid.slice(1)) : null;
       const name = personId
         ? (await q1(`select coalesce(pn.name, pa.address) as name from (select $1::bigint as id) p
                      left join person_name pn on pn.person_id = p.id left join person_address pa on pa.person_id = p.id`, [personId]))?.name
@@ -101,7 +134,7 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
       );
       const svc = new Map(lastServices.map((r) => [r.conversation_id, r.service]));
       return {
-        tid: req.params.tid,
+        tid: tid,
         isGroup,
         title: convs[0].title ?? name ?? members.map((m) => m.name ?? m.address).join(', '),
         conversations: convs.map((c) => ({
@@ -110,7 +143,7 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
         })),
         members,
       };
-    });
+    };
 
     r.get<{ Params: { tid: string }; Querystring: { before?: string; after?: string; around?: string; limit?: string } }>(
       '/api/threads/:tid/messages',
@@ -198,7 +231,7 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
     // ---------- attachments ----------
     const inflight = new Map<number, Promise<string>>();
     const failed = new Map<number, { at: number; error: string }>();
-    r.get<{ Params: { id: string } }>('/api/attachments/:id', async (req, reply) => {
+    r.get<{ Params: { id: string }; Querystring: { w?: string; retry?: string } }>('/api/attachments/:id', async (req, reply) => {
       const id = Number(req.params.id);
       const a = await q1<{ storage_path: string | null; mime: string | null; filename: string | null; network: string }>(
         `select a.storage_path, a.mime, a.filename, c.network from attachment a
@@ -210,7 +243,7 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
       if (!rel || !fs.existsSync(path.join(config.attachmentsDir, rel))) {
         // A photo iCloud couldn't deliver is not retried on every scroll; "Try again" in the app waits this out.
         const failedAt = failed.get(id);
-        if (failedAt && Date.now() - failedAt.at < 10 * 60_000 && !(req.query as { retry?: string }).retry) {
+        if (failedAt && Date.now() - failedAt.at < 10 * 60_000 && !req.query.retry) {
           return reply.code(502).send({ error: failedAt.error });
         }
         let p = inflight.get(id);
@@ -229,6 +262,15 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
       }
       const updated = await q1<{ mime: string | null }>('select mime from attachment where id = $1', [id]);
       reply.header('cache-control', 'private, max-age=31536000, immutable');
+      // ?w=640 etc.: a resized WebP for message bubbles, made once and kept next to the original.
+      const width = Number(req.query.w);
+      if (THUMB_WIDTHS.has(width) && updated?.mime && /^image\/(jpeg|png|webp|heic|heif|tiff|avif)/.test(updated.mime)) {
+        const thumb = await thumbnail(id, rel, width).catch((e) => {
+          req.log.warn({ attachmentId: id, err: String(e) }, 'thumbnail failed, sending the original');
+          return null;
+        });
+        if (thumb) return reply.type('image/webp').sendFile(thumb, config.attachmentsDir);
+      }
       if (updated?.mime) reply.type(updated.mime);
       return reply.sendFile(rel, config.attachmentsDir);
     });

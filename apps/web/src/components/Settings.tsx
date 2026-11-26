@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import QRCode from 'qrcode';
 import { api } from '../api.ts';
+import { clearLocalData } from '../localCache.ts';
 import { listTime } from '../format.ts';
 
 function QR({ code }: { code: string }) {
@@ -250,7 +251,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
         </div>
 
         <footer className="sheet-foot">
-          <button className="pill-btn danger" onClick={() => api.logout().finally(() => qc.setQueryData(['me'], { loggedIn: false, needsSetup: false }))}>
+          <button className="pill-btn danger" onClick={() => api.logout().finally(() => clearLocalData().finally(() => qc.setQueryData(['me'], { loggedIn: false, needsSetup: false })))}>
             Sign out
           </button>
         </footer>
