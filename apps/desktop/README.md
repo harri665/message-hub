@@ -13,6 +13,23 @@ and uses the MacShell look.
   clock are read from `~/.config/macdock/settings.json` and `~/.config/macbar/settings.json`. The window, traffic lights and
   colours match MacShell's own app windows. Without MacShell it follows the desktop's dark/light setting.
 
+## MacShell's Dynamic Island
+
+With MacShell's Dynamic Island turned on, messages also show in the island:
+
+- A new message briefly opens the island: sender, text and a **Reply** button. Clicking the banner opens the chat here.
+- Chats with new messages take a slot in the island (with a count) until you've looked at them. Older unread mail
+  doesn't count.
+- Hovering that slot, or `qs -c MacShell ipc call island messages`, opens a card with the recent chats. Click one to
+  type a reply right in the island (Enter sends, Esc cancels). The arrow (or a double-click) opens it in this app.
+- Nothing pops up while the Messages window is focused or MacShell's Do Not Disturb is on.
+
+The island talks to this app over its local socket (it sends `island`, then gets JSON lines; see
+`App::addIslandClient` in `src/main.cpp`), so it uses the app's session and live feed and needs no login of its own.
+If the app isn't running when MacShell starts, the island starts it in the background once. While the island is
+connected, the app sends no desktop notifications of its own, so each message is announced once.
+The island side lives in MacShell's `DynamicIsland.qml` (marked `[msgisland]`).
+
 ## Fast and small by design
 
 - The QML is compiled to C++ at build time, and the UI uses only core Qt Quick items (no Controls style). Clicking the
