@@ -4,7 +4,7 @@ import { q, q1 } from './db.js';
 
 export interface ConvRow {
   id: number; network: 'apple' | 'whatsapp'; source_id: string; title: string | null; is_group: boolean;
-  last_message_at: string | null; unread_count: number;
+  last_message_at: string | null; unread_count: number; muted_until: string | null;
 }
 
 export const MESSAGE_COLUMNS = `
@@ -82,7 +82,10 @@ const THREADS_SQL = `
                   sum(c.unread_count)::int as unread,
                   array_agg(c.id order by c.last_message_at desc nulls last) as conversation_ids,
                   array_agg(distinct c.network) as networks,
-                  max(c.title) filter (where c.is_group) as group_title
+                  max(c.title) filter (where c.is_group) as group_title,
+                  -- A thread is muted when every chat in it is (a person's iMessage and WhatsApp chats can differ).
+                  bool_and(coalesce(c.muted_until > now(), false)) as muted,
+                  min(c.muted_until) filter (where c.muted_until > now()) as muted_until
            from conversation c join ct on ct.conversation_id = c.id
            where not c.archived
            group by ct.tid
@@ -122,7 +125,7 @@ const THREADS_SQL = `
            order by n.last_at desc
            limit $1 offset $2
          )
-    select p.tid, p.is_group, p.last_at, p.unread, p.conversation_ids, p.networks, p.title,
+    select p.tid, p.is_group, p.last_at, p.unread, p.conversation_ids, p.networks, p.title, p.muted, p.muted_until,
            lm.body as last_body, lm.from_me as last_from_me, lm.service as last_service, lm.kind as last_kind,
            lm.unsent as last_unsent, lm.has_attachment as last_has_attachment, lm.sender_name as last_sender_name
     from page p

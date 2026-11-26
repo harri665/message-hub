@@ -60,6 +60,46 @@ export class WhatsApp {
     await this.listen();
     this.kick();
     setInterval(() => this.kick(), 30_000).unref();
+    this.syncMutes().catch((e) => this.log.warn({ err: String(e) }, 'WhatsApp mute sync failed'));
+    setInterval(() => this.syncMutes().catch((e) => this.log.warn({ err: String(e) }, 'WhatsApp mute sync failed')), 60_000).unref();
+  }
+
+  /**
+   * Copies each chat's mute setting from the WhatsApp account (kept by the connector in whatsmeow_chat_settings,
+   * updated whenever it changes on any device) onto the matching conversation.
+   */
+  async syncMutes() {
+    const exists = await q1(`select 1 from information_schema.tables where table_name = 'whatsmeow_chat_settings'`);
+    if (!exists) return;
+    const changed = await q<{ id: number }>(
+      `with settings as (
+         select case
+                  when s.chat_jid like '%@lid' then coalesce(l.pn || '@s.whatsapp.net', s.chat_jid)
+                  else s.chat_jid
+                end as chat,
+                case
+                  when s.muted_until = -1 then 'infinity'::timestamptz
+                  when s.muted_until > 0 then to_timestamp(s.muted_until)
+                end as until
+         from whatsmeow_chat_settings s
+         left join whatsmeow_lid_map l on s.chat_jid like '%@lid' and l.lid = split_part(s.chat_jid, '@', 1)
+       ),
+       target as (
+         select c.id, (select max(st.until) from settings st where st.chat = c.source_id and st.until > now()) as until
+         from conversation c where c.network = 'whatsapp'
+       )
+       update conversation c set muted_until = t.until
+       from target t
+       where c.id = t.id and c.muted_until is distinct from t.until
+       returning c.id`,
+    );
+    for (const c of changed) emitLive({ type: 'conversation-updated', conversationId: c.id });
+    if (changed.length) this.log.info({ count: changed.length }, 'WhatsApp mute settings updated');
+  }
+
+  /** Mutes or unmutes a chat on the WhatsApp account itself. until: null means always. */
+  async setMute(chat: string, muted: boolean, until: Date | null) {
+    await this.call('/mute', { method: 'POST', body: JSON.stringify({ chat, muted, until: until ? until.getTime() : 0 }) });
   }
 
   private async listen() {

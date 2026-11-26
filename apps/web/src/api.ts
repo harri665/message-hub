@@ -16,11 +16,14 @@ export interface ThreadSummary {
   last_unsent: boolean | null;
   last_has_attachment: boolean | null;
   last_sender_name: string | null;
+  muted: boolean;
+  muted_until: string | null;
 }
 
 export interface ThreadDetail {
   tid: string;
   isGroup: boolean;
+  muted: boolean;
   title: string;
   conversations: { id: number; network: Network; title: string | null; lastMessageAt: string | null; unread: number; lastService: Service }[];
   members: { id: number; network: Network; address: string; name: string | null }[];
@@ -127,6 +130,7 @@ export const api = {
     return request<Message[]>(`/api/threads/${tid}/messages?${qs}`);
   },
   markRead: (tid: string) => post(`/api/threads/${tid}/read`),
+  mute: (tid: string, muted: boolean, hours: number | null = null) => post(`/api/threads/${tid}/mute`, { muted, hours }),
   send: (tid: string, body: { text: string; conversationId?: number; replyToId?: number }) => post(`/api/threads/${tid}/send`, body),
   sendFile: (tid: string, file: File, conversationId?: number, caption?: string) => {
     const form = new FormData();

@@ -292,6 +292,35 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); line-height: 1.2; }
   place-items: center;
 }
 .thread-row.active .unread-count { background: #fff; color: var(--accent); }
+/* Muted: the unread count turns grey and the preview stays quiet, like Messages and WhatsApp. */
+.muted-tag { font-size: 11px; font-weight: 600; color: var(--sub); }
+.thread-row.muted:not(.active) .unread-count { background: var(--fill-strong); color: var(--sub); }
+.thread-row.muted.unread:not(.active) .thread-preview { color: var(--sub); }
+.thread-row.active .muted-tag { color: rgba(255, 255, 255, 0.8); }
+
+.mute { position: relative; }
+.mute-menu {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 240px;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  border-radius: 16px;
+}
+.mute-menu button {
+  border: 0;
+  background: none;
+  color: var(--fg);
+  text-align: left;
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+.mute-menu button:hover { background: var(--fill); }
+.mute-menu .note { padding: 4px 10px 6px; font-size: 12px; }
 .search-results { margin-top: 8px; padding-top: 8px; border-top: 0.5px solid var(--sep); }
 .search-results h2 { font-size: 12px; font-weight: 600; color: var(--sub); padding: 4px 10px; }
 .search-row { display: grid; gap: 2px; }

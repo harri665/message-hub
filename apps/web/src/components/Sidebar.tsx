@@ -12,6 +12,11 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: 'whatsapp', label: 'WhatsApp' },
 ];
 
+function mutedLabel(until: string | null) {
+  if (!until || !Number.isFinite(Date.parse(until)) || new Date(until).getFullYear() > 9000) return 'Muted';
+  return `Muted until ${new Date(until).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`;
+}
+
 function preview(t: ThreadSummary) {
   if (t.last_unsent) return 'Message unsent';
   const body = t.last_body ?? (t.last_has_attachment ? 'Attachment' : '');
@@ -134,7 +139,7 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
         {filtered.map((t) => (
           <button
             key={t.tid}
-            className={`thread-row ${t.tid === activeTid ? 'active' : ''} ${t.unread ? 'unread' : ''}`}
+            className={`thread-row ${t.tid === activeTid ? 'active' : ''} ${t.unread ? 'unread' : ''} ${t.muted ? 'muted' : ''}`}
             onClick={() => onOpen(t.tid)}
             onPointerEnter={() => prefetch(t.tid)}
             onFocus={() => prefetch(t.tid)}
@@ -149,6 +154,7 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
               <span className="thread-bottom">
                 <span className="thread-preview">{preview(t)}</span>
                 <span className="thread-badges">
+                  {t.muted && <span className="muted-tag" title={mutedLabel(t.muted_until)}>Muted</span>}
                   {t.last_service && (
                     <span className={`svc-dot ${serviceClass(t.last_service)}`} title={`Last message via ${SERVICE_LABEL[t.last_service]}`} />
                   )}

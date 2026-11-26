@@ -203,6 +203,7 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
             {t?.isGroup && t.members.length > 0 && <span> with {t.members.length} people</span>}
           </p>
         </div>
+        {t && <MuteControl tid={tid} muted={t.muted} hasWhatsApp={t.conversations.some((c) => c.network === 'whatsapp')} />}
         <button className="pill-btn" onClick={() => setFindOpen((o) => !o)} aria-expanded={findOpen}>
           {findOpen ? 'Done' : 'Search'}
         </button>
@@ -265,6 +266,48 @@ function FindInThread({ tid, onPick, onClose }: { tid: string; onPick: (id: numb
               <span className="search-body"><Highlight text={m.snippet ?? m.body ?? ''} /></span>
             </button>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Mute or unmute this conversation. WhatsApp chats change on the WhatsApp account too, so the phone matches. */
+function MuteControl({ tid, muted, hasWhatsApp }: { tid: string; muted: boolean; hasWhatsApp: boolean }) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const apply = async (next: boolean, hours: number | null = null) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.mute(tid, next, hours);
+      setOpen(false);
+      await Promise.all([qc.invalidateQueries({ queryKey: ['thread', tid] }), qc.invalidateQueries({ queryKey: ['threads'] })]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not change the mute setting');
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (muted) {
+    return (
+      <button className="pill-btn" disabled={busy} onClick={() => apply(false)} title={error ?? undefined}>
+        {busy ? 'Unmuting' : 'Unmute'}
+      </button>
+    );
+  }
+  return (
+    <div className="mute">
+      <button className="pill-btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}>Mute</button>
+      {open && (
+        <div className="mute-menu glass" role="menu">
+          <button role="menuitem" disabled={busy} onClick={() => apply(true, 8)}>For 8 hours</button>
+          <button role="menuitem" disabled={busy} onClick={() => apply(true, 24 * 7)}>For 1 week</button>
+          <button role="menuitem" disabled={busy} onClick={() => apply(true)}>Always</button>
+          <p className="note">{hasWhatsApp ? 'Also mutes it in WhatsApp on your phone.' : 'Mutes it here. iPhone mute settings stay as they are.'}</p>
+          {error && <p className="form-error" role="alert">{error}</p>}
         </div>
       )}
     </div>
