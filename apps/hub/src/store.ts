@@ -146,8 +146,13 @@ export async function upsertConversation(
   return row!.id;
 }
 
+const memberCache = new Set<string>();
+
 export async function addMember(conversationId: number, handleId: number) {
+  const key = `${conversationId}|${handleId}`;
+  if (memberCache.has(key)) return;
   await q('insert into conversation_member (conversation_id, handle_id) values ($1, $2) on conflict do nothing', [conversationId, handleId]);
+  memberCache.add(key);
 }
 
 // ---------- messages ----------

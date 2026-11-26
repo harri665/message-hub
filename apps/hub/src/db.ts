@@ -7,6 +7,10 @@ import { config } from './config.js';
 pg.types.setTypeParser(20, (v) => Number(v));
 
 export const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 10 });
+// See migrations/002: re-syncable data, so don't wait for an fsync on every insert.
+pool.on('connect', (c) => {
+  c.query('set synchronous_commit = off').catch(() => {});
+});
 
 export async function q<T extends pg.QueryResultRow = any>(text: string, params: unknown[] = []): Promise<T[]> {
   const res = await pool.query<T>(text, params as any[]);
