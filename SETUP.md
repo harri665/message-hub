@@ -22,9 +22,11 @@ Check it works: from another machine on the LAN, `http://192.168.1.179:1234/api/
 
 ## 2. Portainer stack on TrueNAS
 
+Either run `ssh -t truenas python3 ~/portainer-create-stack.py` (copy of `deploy/portainer-create-stack.py`; it asks for a Portainer access token and the two passwords, generates the rest, and prints the webhook URL), or do it by hand:
+
 1. Portainer > Stacks > Add stack > **Repository**.
    - Repository URL: `https://github.com/harri665/message-hub`, reference `refs/heads/main`, compose path `docker-compose.yml`.
-   - The repo is private: turn on authentication and use a GitHub fine-grained token with read access to this repo.
+   - The repo is public, so leave authentication off.
 2. Environment variables (see `.env.example`):
    - `DB_PASSWORD`, `INTERNAL_SECRET`: long random strings.
    - `APP_PASSWORD`: the password you'll sign in with.

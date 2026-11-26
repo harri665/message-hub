@@ -57,9 +57,8 @@ def ask_secret(prompt, confirm=False):
 print("Message Hub: create Portainer stack\n")
 print("You'll need:")
 print("  1. A Portainer access token (Portainer > My account > Access tokens > Add access token)")
-print("  2. A GitHub fine-grained token with read-only Contents access to harri665/message-hub")
-print("  3. The password you want for signing in to the web app")
-print("  4. The BlueBubbles server password you set on the Mac\n")
+print("  2. The password you want for signing in to the web app")
+print("  3. The BlueBubbles server password you set on the Mac\n")
 
 token = ask_secret("Portainer access token: ")
 me = api("GET", "/api/users/me", token)
@@ -80,8 +79,6 @@ if len(endpoints) > 1:
     endpoint = endpoints[int(input("Use which one? [1] ") or "1") - 1]
 print(f"  using environment {endpoint['Name']} (id {endpoint['Id']})")
 
-gh_user = input("GitHub username [harri665]: ").strip() or "harri665"
-gh_token = ask_secret("GitHub token (read-only, this repo): ")
 app_password = ask_secret("Web app password (new): ", confirm=True)
 bb_password = ask_secret("BlueBubbles server password: ")
 
@@ -108,9 +105,7 @@ stack = api(
         "repositoryURL": REPO,
         "repositoryReferenceName": "refs/heads/main",
         "composeFile": "docker-compose.yml",
-        "repositoryAuthentication": True,
-        "repositoryUsername": gh_user,
-        "repositoryPassword": gh_token,
+        "repositoryAuthentication": False,  # the repo is public
         "env": [{"name": k, "value": v} for k, v in env.items()],
         "autoUpdate": {"webhook": webhook, "forceUpdate": False, "forcePullImage": False},
         "tlsskipVerify": False,
