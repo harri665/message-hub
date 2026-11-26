@@ -110,13 +110,30 @@ export class BlueBubbles {
   /** Test new connection settings, save them, and reconnect. Throws if the server rejects them. */
   async configure(url: string, password: string) {
     const clean = url.trim().replace(/\/+$/, '');
-    const u = new URL(`${clean}/api/v1/server/info`);
+    const bad = (msg: string) => Object.assign(new Error(msg), { statusCode: 400 });
+    let u: URL;
+    try {
+      u = new URL(`${clean}/api/v1/server/info`);
+    } catch {
+      throw bad('Enter a full address, like http://192.168.1.179:1234');
+    }
+    // This address receives the BlueBubbles password, so it can't point at this server's own services or the
+    // loopback/link-local/metadata ranges.
+    const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (
+      !['http:', 'https:'].includes(u.protocol) ||
+      ['localhost', 'db', 'wa', 'hub', '0.0.0.0', '::', '::1', 'metadata.google.internal'].includes(host) ||
+      host.endsWith('.localhost') || /^127\./.test(host) || /^169\.254\./.test(host) || /^fe80:/.test(host)
+    ) {
+      throw bad("That address can't be used for BlueBubbles.");
+    }
     u.searchParams.set('password', password);
-    const res = await fetch(u, { signal: AbortSignal.timeout(10_000) }).catch((e) => {
-      throw Object.assign(new Error(`Cannot reach ${clean}: ${e.message}`), { statusCode: 400 });
+    // Answers stay generic so this form can't be used to probe the network.
+    const res = await fetch(u, { signal: AbortSignal.timeout(10_000), redirect: 'error' }).catch(() => {
+      throw bad("Couldn't reach BlueBubbles at that address.");
     });
-    if (res.status === 401) throw Object.assign(new Error('BlueBubbles rejected that password'), { statusCode: 400 });
-    if (!res.ok) throw Object.assign(new Error(`BlueBubbles answered HTTP ${res.status}`), { statusCode: 400 });
+    if (res.status === 401) throw bad('BlueBubbles rejected that password.');
+    if (!res.ok || !(res.headers.get('content-type') ?? '').includes('json')) throw bad("Couldn't reach BlueBubbles at that address.");
     await kvSet(SETTINGS_KEY, { url: clean, password });
     this.socket?.close();
     if (this.timer) clearInterval(this.timer);
@@ -489,5 +506,6 @@ function parseTapback(type: string | number, emoji?: string | null): { emoji: st
 }
 
 function safeName(s: string) {
-  return s.replace(/[^\w.\-]+/g, '_').slice(0, 120) || 'file';
+  // No leading dots, so a sender-chosen name can never be "." or "..".
+  return s.replace(/[^\w.\-]+/g, '_').replace(/^\.+/, '_').slice(0, 120) || 'file';
 }

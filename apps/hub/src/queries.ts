@@ -180,8 +180,10 @@ const HIT_END = '⟧';
  */
 export function toTsQuery(text: string): string | null {
   const parts: string[] = [];
-  const clean = (w: string) => w.replace(/[^\p{L}\p{N}]/gu, '');
-  for (const m of text.matchAll(/(-?)"([^"]+)"|(-?)(\S+)/g)) {
+  const clean = (w: string) => w.replace(/[^\p{L}\p{N}]/gu, '').slice(0, 60);
+  // Bounded so one request can't build an enormous query.
+  for (const m of text.slice(0, 300).matchAll(/(-?)"([^"]+)"|(-?)(\S+)/g)) {
+    if (parts.length >= 16) break;
     if (m[2] !== undefined) {
       const words = m[2].split(/\s+/).map(clean).filter(Boolean);
       if (words.length) parts.push(`${m[1] ? '!' : ''}(${words.join(' <-> ')})`);

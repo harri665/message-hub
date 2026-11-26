@@ -30,10 +30,15 @@ export async function sendText(
       )
     : undefined;
   let sourceId: string | undefined;
-  if (conv.network === 'apple') {
-    sourceId = (await bb.sendText(conv.source_id, text, replyTo?.source_id))?.guid;
-  } else {
-    sourceId = (await wa.sendText(conv.source_id, text, replyTo ? { id: replyTo.source_id, sender: replyTo.from_me ? '' : replyTo.address ?? '', text: replyTo.body ?? '' } : null))?.id;
+  try {
+    if (conv.network === 'apple') {
+      sourceId = (await bb.sendText(conv.source_id, text, replyTo?.source_id))?.guid;
+    } else {
+      sourceId = (await wa.sendText(conv.source_id, text, replyTo ? { id: replyTo.source_id, sender: replyTo.from_me ? '' : replyTo.address ?? '', text: replyTo.body ?? '' } : null))?.id;
+    }
+  } catch (e: any) {
+    // The reason a send failed is shown to the user, so give it a status the error handler passes through.
+    throw Object.assign(new Error(e?.statusCode ? e.message : `Not sent: ${e?.message ?? e}`), { statusCode: e?.statusCode ?? 502 });
   }
   if (!sourceId) return null;
   const m = await q1<{ id: number }>('select id from message where conversation_id = $1 and source_id = $2 limit 1', [conv.id, sourceId]);

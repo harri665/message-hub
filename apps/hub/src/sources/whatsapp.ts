@@ -245,7 +245,8 @@ export class WhatsApp {
 }
 
 function safe(s: string) {
-  return s.replace(/[^\w.\-]+/g, '_').slice(0, 120);
+  // No leading dots, so a sender-chosen name can never be "." or "..".
+  return s.replace(/[^\w.\-]+/g, '_').replace(/^\.+/, '_').slice(0, 120) || 'file';
 }
 
 function extFor(mime?: string | null) {

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import zlib from 'node:zlib';
 import Fastify from 'fastify';
 import compress from '@fastify/compress';
@@ -25,6 +26,43 @@ const app = Fastify({
   bodyLimit: 2 * 1024 * 1024,
 });
 
+// Security headers on every response (routes like /api/attachments tighten them further).
+app.addHook('onRequest', async (req, reply) => {
+  const host = req.host;
+  reply.header('x-content-type-options', 'nosniff');
+  reply.header('referrer-policy', 'no-referrer');
+  reply.header('x-frame-options', 'DENY');
+  reply.header(
+    'content-security-policy',
+    [
+      "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "img-src 'self' blob: data:",
+      "media-src 'self' blob:", `connect-src 'self' ws://${host} wss://${host}`, "font-src 'self'", "manifest-src 'self'",
+      "worker-src 'self'", "frame-ancestors 'none'", "base-uri 'none'", "object-src 'none'", "form-action 'self'",
+    ].join('; '),
+  );
+  if (req.protocol === 'https') reply.header('strict-transport-security', 'max-age=15552000');
+});
+
+// Cross-site request forgery: state-changing API calls must come from this app's own pages. Browsers send
+// Sec-Fetch-Site (and Origin) on these requests; other sites, including sibling subdomains, are refused.
+app.addHook('onRequest', async (req, reply) => {
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || !req.url.startsWith('/api/')) return;
+  const site = req.headers['sec-fetch-site'];
+  if (site && site !== 'same-origin' && site !== 'none') return reply.code(403).send({ error: 'Cross-site request refused' });
+  const origin = req.headers.origin;
+  if (origin && origin !== 'null') {
+    let originHost: string | null = null;
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      /* malformed origin: refused below */
+    }
+    if (originHost !== req.host) return reply.code(403).send({ error: 'Cross-site request refused' });
+  } else if (origin === 'null') {
+    return reply.code(403).send({ error: 'Cross-site request refused' });
+  }
+});
+
 await migrate((m) => app.log.info(m));
 fs.mkdirSync(config.attachmentsDir, { recursive: true });
 
@@ -40,7 +78,10 @@ await app.register(fastifyStatic, { root: hasWeb ? config.webDir : config.attach
 if (hasWeb) {
   app.get('/*', (req, reply) => {
     const file = req.url.split('?')[0].replace(/^\/+/, '');
-    if (file && !file.startsWith('api/') && fs.existsSync(`${config.webDir}/${file}`) && fs.statSync(`${config.webDir}/${file}`).isFile()) {
+    // Only look at paths that stay inside the web build.
+    const abs = path.resolve(config.webDir, file);
+    const inside = abs.startsWith(config.webDir + path.sep);
+    if (file && inside && !file.startsWith('api/') && fs.existsSync(abs) && fs.statSync(abs).isFile()) {
       if (file.startsWith('assets/')) reply.header('cache-control', 'public, max-age=31536000, immutable');
       return reply.sendFile(file);
     }
@@ -59,10 +100,13 @@ registerAuthRoutes(app);
 registerApiRoutes(app, bb, wa);
 registerMcp(app);
 
+// Errors that set a status on purpose carry a message meant for the user; anything else (database errors,
+// unexpected failures) is logged and answered generically, so internals don't leak.
 app.setErrorHandler((err: any, _req, reply) => {
   const status = err.statusCode ?? 500;
   if (status >= 500) app.log.error(err);
-  reply.code(status).send({ error: err.message });
+  const message = err.statusCode ? err.message : 'Something went wrong on the server.';
+  reply.code(status).send({ error: message });
 });
 
 await app.listen({ port: config.port, host: '0.0.0.0' });

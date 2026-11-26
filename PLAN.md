@@ -97,7 +97,7 @@ This app holds every private message I have, so:
 
 - Default to LAN / Tailscale only. If it goes on a public subdomain, it sits behind strong auth with TOTP, HTTPS only, and rate-limited login.
 - BlueBubbles and wa-connector are never exposed outside the Docker network / LAN.
-- Secrets live in Portainer stack env vars, never in the repo. The repo is private anyway.
+- Secrets live in Portainer stack env vars, never in the repo. The repo is public, so nothing secret goes in it.
 - Postgres and attachment dataset are included in TrueNAS snapshots; any offsite backup is encrypted.
 
 ## Risks

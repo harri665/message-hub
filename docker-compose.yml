@@ -19,6 +19,8 @@ services:
   wa:
     build: ./services/wa-connector
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     environment:
       DATABASE_URL: postgres://messagehub:${DB_PASSWORD}@db:5432/messagehub?sslmode=disable
       INTERNAL_SECRET: ${INTERNAL_SECRET:?set INTERNAL_SECRET}
@@ -32,6 +34,8 @@ services:
       context: .
       dockerfile: apps/hub/Dockerfile
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
     ports:
       - "${HUB_PORT:-8095}:8080"
     environment:

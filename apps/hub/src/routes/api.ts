@@ -14,6 +14,17 @@ import { approveSendRequest, listSendRequests, rejectSendRequest, sendText } fro
 import { listThreads, searchMessages, threadConversations, threadMessages, type SearchFilter } from '../queries.js';
 
 const THUMB_WIDTHS = new Set([320, 640, 1280]);
+/** Image formats we make resized copies of. Others (SVG, TIFF, ...) are never decoded on the server. */
+const THUMB_SOURCES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'image/avif', 'image/gif']);
+/** Types shown in the browser. Everything else (HTML, SVG, XML, scripts, unknown) is sent as a download. */
+const INLINE_TYPES = new Set([
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif', 'image/avif',
+  'video/mp4', 'video/quicktime', 'video/webm', 'video/3gpp',
+  'audio/mpeg', 'audio/mp4', 'audio/x-m4a', 'audio/aac', 'audio/ogg', 'audio/opus', 'audio/wav', 'audio/amr', 'audio/x-caf',
+  'application/pdf',
+]);
+// Only the image decoders we need; the rest of libvips' loaders (SVG, PDF, TIFF, ...) stay off for untrusted input.
+sharp.block({ operation: ['VipsForeignLoadSvg', 'VipsForeignLoadPdf', 'VipsForeignLoadTiff', 'VipsForeignLoadMagick', 'VipsForeignLoadOpenslide', 'VipsForeignLoadFits', 'VipsForeignLoadMatrix', 'VipsForeignLoadVips', 'VipsForeignLoadPpm', 'VipsForeignLoadRad', 'VipsForeignLoadAnalyze', 'VipsForeignLoadCsv', 'VipsForeignLoadJp2k'] });
 const thumbsInflight = new Map<string, Promise<string>>();
 
 /** Returns the relative path of a resized WebP copy of an image attachment, creating it if needed. */
@@ -26,7 +37,7 @@ function thumbnail(id: number, rel: string, width: number): Promise<string> {
     p = (async () => {
       await fs.promises.mkdir(path.dirname(abs), { recursive: true });
       const tmp = `${abs}.${process.pid}.tmp`;
-      await sharp(path.join(config.attachmentsDir, rel), { failOn: 'none' })
+      await sharp(path.join(config.attachmentsDir, rel), { failOn: 'error' })
         .rotate()
         .resize({ width, withoutEnlargement: true })
         .webp({ quality: 78 })
@@ -75,6 +86,18 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
   });
 
   app.get('/api/live', { websocket: true }, async (socket, req) => {
+    // WebSockets aren't covered by CORS: only this app's own pages may open the live feed.
+    const origin = req.headers.origin;
+    let sameOrigin = false;
+    try {
+      sameOrigin = !!origin && new URL(origin).host === req.host;
+    } catch {
+      /* malformed origin */
+    }
+    if (!sameOrigin) {
+      socket.close(4403, 'origin not allowed');
+      return;
+    }
     if (!(await sessionValid(req.cookies[COOKIE]))) {
       socket.close(4401, 'not logged in');
       return;
@@ -205,11 +228,15 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
       const caption = fields.caption?.value?.trim() || undefined;
       const conv = await pickConversation(req.params.tid, conversationId);
       const file = { buffer, filename: part.filename || 'file', mime: part.mimetype || 'application/octet-stream' };
-      if (conv.network === 'apple') {
-        await bb.sendFile(conv.source_id, file);
-        if (caption) await bb.sendText(conv.source_id, caption);
-      } else {
-        await wa.sendFile(conv.source_id, file, caption);
+      try {
+        if (conv.network === 'apple') {
+          await bb.sendFile(conv.source_id, file);
+          if (caption) await bb.sendText(conv.source_id, caption);
+        } else {
+          await wa.sendFile(conv.source_id, file, caption);
+        }
+      } catch (e: any) {
+        throw Object.assign(new Error(e?.statusCode ? e.message : `Not sent: ${e?.message ?? e}`), { statusCode: e?.statusCode ?? 502 });
       }
       return { ok: true };
     });
@@ -257,16 +284,23 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
       }
       const updated = await q1<{ mime: string | null }>('select mime from attachment where id = $1', [id]);
       reply.header('cache-control', 'private, max-age=31536000, immutable');
+      // Attachments come from other people. Even when opened directly in a tab they must not run as part of this
+      // app: no scripts, no plugins, and anything outside a short list of media types is a download, never a page.
+      reply.header('content-security-policy', "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox");
+      reply.header('x-content-type-options', 'nosniff');
+      const mime = (updated?.mime ?? '').toLowerCase().split(';')[0].trim();
+      const inline = INLINE_TYPES.has(mime);
+      reply.header('content-disposition', `${inline ? 'inline' : 'attachment'}; filename="${(a.filename ?? `attachment-${id}`).replace(/[^\w.\- ]/g, '_')}"`);
       // ?w=640 etc.: a resized WebP for message bubbles, made once and kept next to the original.
       const width = Number(req.query.w);
-      if (THUMB_WIDTHS.has(width) && updated?.mime && /^image\/(jpeg|png|webp|heic|heif|tiff|avif)/.test(updated.mime)) {
+      if (THUMB_WIDTHS.has(width) && THUMB_SOURCES.has(mime)) {
         const thumb = await thumbnail(id, rel, width).catch((e) => {
           req.log.warn({ attachmentId: id, err: String(e) }, 'thumbnail failed, sending the original');
           return null;
         });
-        if (thumb) return reply.type('image/webp').sendFile(thumb, config.attachmentsDir);
+        if (thumb) return reply.type('image/webp').header('content-disposition', 'inline').sendFile(thumb, config.attachmentsDir);
       }
-      if (updated?.mime) reply.type(updated.mime);
+      reply.type(inline ? mime : 'application/octet-stream');
       return reply.sendFile(rel, config.attachmentsDir);
     });
   });
