@@ -44,12 +44,12 @@ export function App() {
   return (
     <div className={`shell ${tid ? 'has-thread' : ''}`}>
       <Sidebar activeTid={tid} onOpen={open} onSettings={() => setSettingsOpen(true)} />
-      <main className="pane">
+      <main className="pane glass-thin">
         {tid ? (
           <ThreadView key={tid} tid={tid} onBack={() => open(null)} />
         ) : (
           <div className="pane-empty">
-            <p>Pick a conversation to start reading.</p>
+            <p>Choose a conversation.</p>
           </div>
         )}
       </main>

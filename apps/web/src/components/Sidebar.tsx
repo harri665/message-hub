@@ -1,7 +1,15 @@
-import { useDeferredValue, useMemo, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api, SERVICE_LABEL, type ThreadSummary } from '../api.ts';
 import { initials, listTime, serviceClass } from '../format.ts';
+
+type Filter = 'all' | 'unread' | 'apple' | 'whatsapp';
+const FILTERS: { key: Filter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'unread', label: 'Unread' },
+  { key: 'apple', label: 'iMessage' },
+  { key: 'whatsapp', label: 'WhatsApp' },
+];
 
 function preview(t: ThreadSummary) {
   if (t.last_unsent) return 'Message unsent';
@@ -16,47 +24,75 @@ export function Sidebar({ activeTid, onOpen, onSettings }: { activeTid: string |
   const threads = useQuery({ queryKey: ['threads'], queryFn: api.threads, refetchInterval: 60_000 });
   const status = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 30_000 });
   const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<Filter>('all');
+  const searchRef = useRef<HTMLInputElement>(null);
   const deferred = useDeferredValue(query.trim());
-  const search = useQuery({
-    queryKey: ['search', deferred],
-    queryFn: () => api.search(deferred),
-    enabled: deferred.length >= 2,
-  });
+  const search = useQuery({ queryKey: ['search', deferred], queryFn: () => api.search(deferred), enabled: deferred.length >= 2 });
+
+  // Ctrl/Cmd+K jumps to search from anywhere.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const filtered = useMemo(() => {
-    const list = threads.data ?? [];
-    if (!deferred) return list;
-    const needle = deferred.toLowerCase();
-    return list.filter((t) => t.title.toLowerCase().includes(needle));
-  }, [threads.data, deferred]);
+    let list = threads.data ?? [];
+    if (filter === 'unread') list = list.filter((t) => t.unread > 0);
+    else if (filter !== 'all') list = list.filter((t) => t.networks.includes(filter));
+    if (deferred) {
+      const needle = deferred.toLowerCase();
+      list = list.filter((t) => t.title.toLowerCase().includes(needle));
+    }
+    return list;
+  }, [threads.data, filter, deferred]);
 
   const s = status.data;
-  const problems: string[] = [];
-  if (s) {
-    if (s.bluebubbles.configured && !s.bluebubbles.connected) problems.push('iMessage is offline');
+  let banner: { text: string; warn: boolean } | null = null;
+  if (s?.bluebubbles.importing) banner = { text: 'Importing your iMessage history. This can take a while.', warn: false };
+  else if (s) {
+    const problems: string[] = [];
+    if (!s.bluebubbles.configured) problems.push('iMessage is not connected');
+    else if (!s.bluebubbles.connected) problems.push('iMessage is offline');
     if (s.whatsapp.configured && !s.whatsapp.loggedIn) problems.push('WhatsApp is not linked');
     else if (s.whatsapp.configured && !s.whatsapp.connected) problems.push('WhatsApp is offline');
+    if (problems.length) banner = { text: `${problems.join('. ')}. Open Settings to fix it.`, warn: true };
   }
-  const importing = s?.bluebubbles.importing;
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar glass">
       <header className="sidebar-head">
         <h1>Messages</h1>
-        <button className="text-btn" onClick={onSettings}>Settings</button>
+        <button className="pill-btn" onClick={onSettings}>Settings</button>
       </header>
-      <div className="search">
+      <div className="sidebar-tools">
         <input
+          ref={searchRef}
+          className="search-field"
           type="search"
-          placeholder="Search people and messages"
+          placeholder="Search (Ctrl+K)"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => e.key === 'Escape' && setQuery('')}
           aria-label="Search people and messages"
         />
+        <div className="segmented" role="group" aria-label="Show">
+          {FILTERS.map((f) => (
+            <button key={f.key} aria-pressed={filter === f.key} onClick={() => setFilter(f.key)}>
+              {f.label}
+            </button>
+          ))}
+        </div>
       </div>
-      {(problems.length > 0 || importing) && (
-        <button className="banner" onClick={onSettings}>
-          {importing ? 'Importing your iMessage history. This can take a while.' : problems.join('. ') + '.'}
+      {banner && (
+        <button className={`banner ${banner.warn ? 'warn' : ''}`} onClick={onSettings}>
+          {banner.text}
         </button>
       )}
       <nav className="thread-list" aria-label="Conversations">
@@ -65,11 +101,15 @@ export function Sidebar({ activeTid, onOpen, onSettings }: { activeTid: string |
         {threads.data && !threads.data.length && (
           <p className="list-note">No conversations yet. Connect iMessage or link WhatsApp in Settings.</p>
         )}
+        {threads.data && threads.data.length > 0 && !filtered.length && !deferred && (
+          <p className="list-note">{filter === 'unread' ? "You're all caught up." : 'No conversations here.'}</p>
+        )}
         {filtered.map((t) => (
           <button
             key={t.tid}
             className={`thread-row ${t.tid === activeTid ? 'active' : ''} ${t.unread ? 'unread' : ''}`}
             onClick={() => onOpen(t.tid)}
+            aria-current={t.tid === activeTid ? 'page' : undefined}
           >
             <span className={`avatar ${t.is_group ? 'group' : ''}`} aria-hidden="true">{initials(t.title)}</span>
             <span className="thread-main">

@@ -29,7 +29,8 @@ export function Login({ needsSetup, onDone }: { needsSetup: boolean; onDone: () 
 
   return (
     <div className="login">
-      <form className="login-card" onSubmit={submit}>
+      <form className="login-card glass" onSubmit={submit}>
+        <img className="login-icon" src="/icons/icon-192.png" alt="" width={72} height={72} />
         <h1>Messages</h1>
         <p className="login-sub">
           {needsSetup ? 'Create the password you will use to sign in.' : 'iMessage, SMS and WhatsApp in one place.'}
@@ -37,13 +38,14 @@ export function Login({ needsSetup, onDone }: { needsSetup: boolean; onDone: () 
         {needsSetup && (
           <>
             <label htmlFor="code">Setup code</label>
-            <input id="code" autoComplete="off" autoFocus value={code} onChange={(e) => setCode(e.target.value)} />
+            <input id="code" className="field" autoComplete="off" autoFocus value={code} onChange={(e) => setCode(e.target.value)} />
             <p className="field-hint">Printed in the hub's logs when it starts.</p>
           </>
         )}
         <label htmlFor="pw">{needsSetup ? 'New password' : 'Password'}</label>
         <input
           id="pw"
+          className="field"
           type="password"
           autoComplete={needsSetup ? 'new-password' : 'current-password'}
           autoFocus={!needsSetup}
@@ -53,11 +55,11 @@ export function Login({ needsSetup, onDone }: { needsSetup: boolean; onDone: () 
         {needsSetup && (
           <>
             <label htmlFor="pw2">Type it again</label>
-            <input id="pw2" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+            <input id="pw2" className="field" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
           </>
         )}
         {error && <p className="form-error" role="alert">{error}</p>}
-        <button className="btn-primary" disabled={busy || !password || (needsSetup && (!code || !confirm))}>
+        <button className="pill-btn primary" disabled={busy || !password || (needsSetup && (!code || !confirm))}>
           {busy ? (needsSetup ? 'Creating' : 'Signing in') : needsSetup ? 'Create password' : 'Sign in'}
         </button>
       </form>

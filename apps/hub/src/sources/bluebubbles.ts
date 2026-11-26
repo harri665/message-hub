@@ -71,13 +71,13 @@ export class BlueBubbles {
     return u;
   }
 
-  private async api<T = any>(p: string, init: { method?: string; body?: unknown; query?: Record<string, string> } = {}): Promise<T> {
+  private async api<T = any>(p: string, init: { method?: string; body?: unknown; query?: Record<string, string>; timeoutMs?: number } = {}): Promise<T> {
     const isForm = init.body instanceof FormData;
     const res = await fetch(this.url(p, init.query), {
       method: init.method ?? (init.body ? 'POST' : 'GET'),
       headers: init.body && !isForm ? { 'content-type': 'application/json' } : undefined,
       body: init.body ? (isForm ? (init.body as FormData) : JSON.stringify(init.body)) : undefined,
-      signal: AbortSignal.timeout(120_000),
+      signal: AbortSignal.timeout(init.timeoutMs ?? 120_000),
     });
     const json: any = await res.json().catch(() => ({}));
     if (!res.ok || (json.status && json.status >= 400)) {
@@ -264,6 +264,12 @@ export class BlueBubbles {
           if ((m.originalROWID ?? 0) > maxSeen) maxSeen = m.originalROWID!;
         }
         got += msgs.length;
+        // Guard: a server that ignores the ROWID filter would make this loop forever.
+        if (msgs.some((m) => m.originalROWID == null || m.originalROWID <= lo || m.originalROWID > hi)) {
+          this.log.warn({}, 'BlueBubbles ignored the ROWID filter; stopping this sync pass');
+          this.status.importing = false;
+          return;
+        }
         if (msgs.length < PAGE) break;
       }
       count += got;
@@ -352,7 +358,12 @@ export class BlueBubbles {
     const method = this.status.privateApi ? 'private-api' : 'apple-script';
     const body: Record<string, unknown> = { chatGuid, tempGuid: `temp-${randomUUID()}`, message: text, method };
     if (replyToGuid && this.status.privateApi) Object.assign(body, { selectedMessageGuid: replyToGuid, partIndex: 0 });
-    const res = await this.api('/message/text', { body });
+    const res = await this.api('/message/text', { body, timeoutMs: 45_000 }).catch((e) => {
+      if (e?.name === 'TimeoutError') {
+        throw Object.assign(new Error("The Mac didn't confirm the message in time. Check for a prompt in Messages or BlueBubbles on the Mac."), { statusCode: 504 });
+      }
+      throw e;
+    });
     if (res.data?.guid) await this.ingest(res.data, false);
     return res.data;
   }

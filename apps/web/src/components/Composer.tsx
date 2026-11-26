@@ -1,20 +1,25 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
-import { api, SERVICE_LABEL, type Message, type ThreadDetail } from '../api.ts';
+import { forwardRef, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { SERVICE_LABEL, type Message, type ThreadDetail } from '../api.ts';
 import { serviceClass } from '../format.ts';
+import type { Pending } from './ThreadView.tsx';
 
-export function Composer({
-  tid, thread, replyTo, onClearReply,
-}: { tid: string; thread: ThreadDetail; replyTo: Message | null; onClearReply: () => void }) {
-  const qc = useQueryClient();
+interface Props {
+  thread: ThreadDetail;
+  replyTo: Message | null;
+  onClearReply: () => void;
+  onSend: (p: Omit<Pending, 'key' | 'status'>) => void;
+}
+
+export const Composer = forwardRef<HTMLFormElement, Props>(function Composer({ thread, replyTo, onClearReply, onSend }, ref) {
   const [text, setText] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   // Default to the conversation with the most recent activity; a reply goes back where the original came from.
   const [convId, setConvId] = useState<number>(thread.conversations[0]?.id);
   const fileRef = useRef<HTMLInputElement>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
 
+  useEffect(() => {
+    areaRef.current?.focus();
+  }, []);
   useEffect(() => {
     if (replyTo) {
       setConvId(replyTo.conversation_id);
@@ -23,107 +28,78 @@ export function Composer({
   }, [replyTo]);
 
   const conv = thread.conversations.find((c) => c.id === convId) ?? thread.conversations[0];
-  const label = conv ? SERVICE_LABEL[conv.lastService] : '';
+  if (!conv) return null;
+  const label = SERVICE_LABEL[conv.lastService];
 
-  const refresh = () => {
-    qc.invalidateQueries({ queryKey: ['messages', tid] });
-    qc.invalidateQueries({ queryKey: ['threads'] });
-  };
-
-  const send = async (e?: FormEvent) => {
+  // The box clears immediately and the message shows as "Sending…", so it can't be sent twice by accident.
+  const submit = (e?: FormEvent) => {
     e?.preventDefault();
     const body = text.trim();
-    if (!body || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await api.send(tid, { text: body, conversationId: conv?.id, replyToId: replyTo?.id });
-      setText('');
-      onClearReply();
-      refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Message not sent');
-    } finally {
-      setBusy(false);
-      areaRef.current?.focus();
-    }
-  };
-
-  const sendFile = async (file: File) => {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.sendFile(tid, file, conv?.id, text.trim() || undefined);
-      setText('');
-      refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'File not sent');
-    } finally {
-      setBusy(false);
-      if (fileRef.current) fileRef.current.value = '';
-    }
+    if (!body) return;
+    onSend({ text: body, conversationId: conv.id, service: conv.lastService, replyToId: replyTo?.id });
+    setText('');
+    onClearReply();
+    areaRef.current?.focus();
   };
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      send();
+      submit();
     }
     if (e.key === 'Escape' && replyTo) onClearReply();
   };
 
-  if (!conv) return null;
-
   return (
-    <form className={`composer ${serviceClass(conv.lastService)}`} onSubmit={send}>
+    <form ref={ref} className={`composer glass ${serviceClass(conv.lastService)}`} onSubmit={submit}>
       {replyTo && (
         <div className="composer-reply">
           <span>
             Replying to {replyTo.from_me ? 'yourself' : replyTo.sender_name ?? 'message'}: <em>{replyTo.body?.slice(0, 80) ?? 'Attachment'}</em>
           </span>
-          <button type="button" className="text-btn" onClick={onClearReply}>Cancel</button>
+          <button type="button" className="link-btn" onClick={onClearReply}>Cancel</button>
         </div>
       )}
-      {thread.conversations.length > 1 && (
-        <div className="send-via" role="radiogroup" aria-label="Send with">
-          {thread.conversations.map((c) => (
-            <button
-              key={c.id}
-              type="button"
-              role="radio"
-              aria-checked={c.id === conv.id}
-              className={`via ${serviceClass(c.lastService)} ${c.id === conv.id ? 'on' : ''}`}
-              onClick={() => setConvId(c.id)}
-            >
-              {SERVICE_LABEL[c.lastService]}
-            </button>
-          ))}
-        </div>
-      )}
-      {error && <p className="form-error" role="alert">{error}</p>}
       <div className="composer-row">
-        <button type="button" className="text-btn attach" onClick={() => fileRef.current?.click()} disabled={busy}>
-          Attach
-        </button>
+        {thread.conversations.length > 1 && (
+          <div className="segmented" role="radiogroup" aria-label="Send with">
+            {thread.conversations.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                role="radio"
+                aria-checked={c.id === conv.id}
+                className={serviceClass(c.lastService)}
+                onClick={() => setConvId(c.id)}
+              >
+                {SERVICE_LABEL[c.lastService]}
+              </button>
+            ))}
+          </div>
+        )}
+        <button type="button" className="pill-btn" onClick={() => fileRef.current?.click()}>Attach</button>
         <input
           ref={fileRef}
           type="file"
           hidden
-          onChange={(e) => e.target.files?.[0] && sendFile(e.target.files[0])}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) onSend({ file, text: text.trim() || undefined, conversationId: conv.id, service: conv.lastService });
+            setText('');
+            e.target.value = '';
+          }}
         />
         <textarea
           ref={areaRef}
           rows={1}
           value={text}
-          placeholder={`${label} message`}
+          placeholder={label}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKey}
           aria-label={`Write a ${label} message`}
         />
-        <button className="btn-send" disabled={busy || !text.trim()}>
-          {busy ? 'Sending' : 'Send'}
-        </button>
+        <button className="pill-btn btn-send" disabled={!text.trim()}>Send</button>
       </div>
     </form>
   );
-}
+});

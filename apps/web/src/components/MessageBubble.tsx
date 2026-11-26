@@ -19,7 +19,7 @@ function Linkified({ text }: { text: string }) {
   );
 }
 
-function AttachmentView({ a }: { a: Attachment }) {
+function AttachmentView({ a, onOpenImage }: { a: Attachment; onOpenImage: (src: string) => void }) {
   const src = `/api/attachments/${a.id}`;
   const mime = a.mime ?? '';
   // Reserve the final box before the file loads so the list doesn't jump; tiny images get a readable minimum.
@@ -30,9 +30,9 @@ function AttachmentView({ a }: { a: Attachment }) {
   };
   if (mime.startsWith('image/')) {
     return (
-      <a className="att-media" href={src} target="_blank" rel="noreferrer" style={box}>
+      <button type="button" className="att-media" style={box} onClick={() => onOpenImage(src)} aria-label={`Open ${a.filename ?? 'photo'}`}>
         <img src={src} alt={a.filename ?? 'Image'} loading="lazy" />
-      </a>
+      </button>
     );
   }
   if (mime.startsWith('video/')) {
@@ -57,9 +57,10 @@ function statusText(m: Message) {
 }
 
 export function MessageBubble({
-  m, isGroup, firstInRun, lastInRun, showStatus, onReply,
+  m, isGroup, firstInRun, lastInRun, showStatus, onReply, onOpenImage,
 }: {
   m: Message; isGroup: boolean; firstInRun: boolean; lastInRun: boolean; showStatus: boolean; onReply: () => void;
+  onOpenImage: (src: string) => void;
 }) {
   if (m.kind === 'system') {
     return (
@@ -74,7 +75,7 @@ export function MessageBubble({
     <div className={`msg ${side} ${serviceClass(m.service)} ${firstInRun ? 'first' : ''} ${lastInRun ? 'last' : ''}`}>
       {isGroup && !m.from_me && firstInRun && <span className="msg-sender">{m.sender_name}</span>}
       <div className="msg-row">
-        <div className="msg-stack" title={`${fullTime(m.sent_at)} via ${SERVICE_LABEL[m.service]}`}>
+        <div className={`msg-stack ${m.reactions.length ? 'has-reactions' : ''}`} title={`${fullTime(m.sent_at)} via ${SERVICE_LABEL[m.service]}`}>
           {m.reply_to_id && (
             <div className="msg-quote">
               <span className="quote-name">{m.reply_to_from_me ? 'You' : m.reply_to_name ?? 'Someone'}</span>
@@ -82,7 +83,7 @@ export function MessageBubble({
             </div>
           )}
           {m.attachments.map((a) => (
-            <AttachmentView key={a.id} a={a} />
+            <AttachmentView key={a.id} a={a} onOpenImage={onOpenImage} />
           ))}
           {m.unsent && <div className="bubble unsent">Message unsent</div>}
           {hasText && (
@@ -92,7 +93,7 @@ export function MessageBubble({
             </div>
           )}
           {m.reactions.length > 0 && (
-            <div className="reactions" aria-label="Reactions">
+            <div className="reactions glass" aria-label="Reactions">
               {m.reactions.map((r, i) => (
                 <span key={i} className={`reaction ${r.fromMe ? 'mine' : ''}`} title={r.fromMe ? 'You' : r.name ?? ''}>
                   {r.emoji}
