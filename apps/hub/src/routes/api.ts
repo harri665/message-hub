@@ -297,6 +297,7 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
 
     // ---------- attachments ----------
     const inflight = new Map<number, Promise<string>>();
+    const failed = new Map<number, { at: number; error: string }>();
     r.get<{ Params: { id: string } }>('/api/attachments/:id', async (req, reply) => {
       const id = Number(req.params.id);
       const a = await q1<{ storage_path: string | null; mime: string | null; filename: string | null; network: string }>(
@@ -307,6 +308,11 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
       if (!a) return reply.code(404).send({ error: 'not found' });
       let rel = a.storage_path;
       if (!rel || !fs.existsSync(path.join(config.attachmentsDir, rel))) {
+        // A photo iCloud couldn't deliver is not retried on every scroll; "Try again" in the app waits this out.
+        const failedAt = failed.get(id);
+        if (failedAt && Date.now() - failedAt.at < 10 * 60_000 && !(req.query as { retry?: string }).retry) {
+          return reply.code(502).send({ error: failedAt.error });
+        }
         let p = inflight.get(id);
         if (!p) {
           p = (a.network === 'apple' ? bb.downloadAttachment(id) : wa.downloadAttachment(id)).finally(() => inflight.delete(id));
@@ -315,8 +321,11 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
         try {
           rel = await p;
         } catch (e) {
-          return reply.code(502).send({ error: e instanceof Error ? e.message : String(e) });
+          const error = e instanceof Error ? e.message : String(e);
+          failed.set(id, { at: Date.now(), error });
+          return reply.code(502).send({ error });
         }
+        failed.delete(id);
       }
       const updated = await q1<{ mime: string | null }>('select mime from attachment where id = $1', [id]);
       reply.header('cache-control', 'private, max-age=31536000, immutable');

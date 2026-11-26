@@ -1,3 +1,4 @@
+import { useState, type CSSProperties } from 'react';
 import type { Attachment, Message } from '../api.ts';
 import { SERVICE_LABEL } from '../api.ts';
 import { clock, fileSize, fullTime, serviceClass } from '../format.ts';
@@ -19,6 +20,29 @@ function Linkified({ text }: { text: string }) {
   );
 }
 
+function ImageAttachment({ a, src, box, onOpenImage }: {
+  a: Attachment; src: string; box: CSSProperties; onOpenImage: (src: string) => void;
+}) {
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const url = attempt ? `${src}?retry=${attempt}` : src;
+  if (failed) {
+    return (
+      <div className="att-missing" style={{ ...box, aspectRatio: undefined }}>
+        <span>Photo didn't load</span>
+        <button type="button" className="link-btn" onClick={() => { setFailed(false); setAttempt((n) => n + 1); }}>
+          Try again
+        </button>
+      </div>
+    );
+  }
+  return (
+    <button type="button" className="att-media" style={box} onClick={() => onOpenImage(url)} aria-label={`Open ${a.filename ?? 'photo'}`}>
+      <img src={url} alt={a.filename ?? 'Image'} loading="lazy" onError={() => setFailed(true)} />
+    </button>
+  );
+}
+
 function AttachmentView({ a, onOpenImage }: { a: Attachment; onOpenImage: (src: string) => void }) {
   const src = `/api/attachments/${a.id}`;
   const mime = a.mime ?? '';
@@ -29,11 +53,7 @@ function AttachmentView({ a, onOpenImage }: { a: Attachment; onOpenImage: (src: 
     ...(a.width && a.height ? { aspectRatio: `${a.width} / ${a.height}` } : {}),
   };
   if (mime.startsWith('image/')) {
-    return (
-      <button type="button" className="att-media" style={box} onClick={() => onOpenImage(src)} aria-label={`Open ${a.filename ?? 'photo'}`}>
-        <img src={src} alt={a.filename ?? 'Image'} loading="lazy" />
-      </button>
-    );
+    return <ImageAttachment a={a} src={src} box={box} onOpenImage={onOpenImage} />;
   }
   if (mime.startsWith('video/')) {
     return <video className="att-media" src={src} controls preload="metadata" style={box} />;

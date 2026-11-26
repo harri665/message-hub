@@ -406,6 +406,20 @@ h1, h2, h3 { margin: 0; font-family: var(--font-display); line-height: 1.2; }
 }
 .att-media img { display: block; width: 100%; height: 100%; max-height: 420px; object-fit: cover; }
 video.att-media { object-fit: contain; }
+.att-missing {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 4px;
+  min-height: 96px;
+  padding: 14px;
+  border-radius: 18px;
+  background: var(--fill);
+  box-shadow: 0 0 0 0.5px var(--ring);
+  color: var(--sub);
+  font-size: 13px;
+  text-align: center;
+}
 .att-audio { max-width: 300px; }
 .att-file {
   display: grid;

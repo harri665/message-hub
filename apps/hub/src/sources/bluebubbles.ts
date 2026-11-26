@@ -55,6 +55,8 @@ export class BlueBubbles {
   /** Connection settings: from env, or saved from the web app's Settings (env wins). */
   private conn = { url: config.bluebubbles.url, password: config.bluebubbles.password };
   private timer?: NodeJS.Timeout;
+  /** iCloud downloads go through Messages on the Mac; a few at a time keeps it responsive. */
+  private icloudSlots = new Limiter(3);
 
   constructor(private log: Log) {}
 
@@ -389,7 +391,24 @@ export class BlueBubbles {
   async downloadAttachment(attachmentId: number): Promise<string> {
     const a = await q1<{ source_id: string; filename: string | null }>('select source_id, filename from attachment where id = $1', [attachmentId]);
     if (!a) throw new Error('attachment not found');
-    const res = await fetch(this.url(`/attachment/${encodeURIComponent(a.source_id)}/download`), { signal: AbortSignal.timeout(300_000) });
+    const guid = encodeURIComponent(a.source_id);
+    let res = await fetch(this.url(`/attachment/${guid}/download`), { signal: AbortSignal.timeout(300_000) });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      // Photos synced from Messages in iCloud stay in iCloud until opened on the Mac. The Private API can
+      // make Messages fetch them ("force" download); without it there is nothing to download.
+      if (!/does not exist in disk/i.test(detail)) throw new Error(`attachment download failed: ${res.status}`);
+      res = await this.icloudSlots.run(() => fetch(this.url(`/attachment/${guid}/download/force`), { signal: AbortSignal.timeout(300_000) }));
+      if (!res.ok || (res.headers.get('content-type') ?? '').includes('application/json')) {
+        const why = await res.text().catch(() => '');
+        res = await fetch(this.url(`/attachment/${guid}/download`), { signal: AbortSignal.timeout(300_000) });
+        if (!res.ok) {
+          await res.body?.cancel().catch(() => {});
+          this.log.warn({ attachmentId, why: why.slice(0, 200) }, 'iCloud attachment download failed');
+          throw new Error('This photo is still in iCloud and the Mac could not download it.');
+        }
+      }
+    }
     if (!res.ok || !res.body) throw new Error(`attachment download failed: ${res.status}`);
     // BlueBubbles converts HEIC to JPEG on download; follow the served type when it differs.
     const served = res.headers.get('content-type');
@@ -405,6 +424,22 @@ export class BlueBubbles {
 }
 
 // ---------- helpers ----------
+
+class Limiter {
+  private active = 0;
+  private queue: (() => void)[] = [];
+  constructor(private max: number) {}
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.active >= this.max) await new Promise<void>((r) => this.queue.push(r));
+    this.active++;
+    try {
+      return await fn();
+    } finally {
+      this.active--;
+      this.queue.shift()?.();
+    }
+  }
+}
 
 function isGroupChat(chat: BBChat) {
   return chat.style === 43 || chat.guid.includes(';+;') || (chat.participants?.length ?? 0) > 1;
