@@ -6,6 +6,7 @@ Self-hosted web app that syncs iMessage, SMS and WhatsApp from my iPhone into on
 - **WhatsApp** comes through `services/wa-connector`, a linked-device client built on whatsmeow.
 - **`apps/hub`** stores everything in Postgres, merges each person's iMessage and WhatsApp chats into one timeline, and serves the web app.
 - **`apps/web`** is the React PWA: inbox, merged conversations, search, attachments, replies, WhatsApp pairing.
+- **`apps/desktop`** is a native Linux client (C++ / Qt Quick) in the MacShell style, with notifications and a small background footprint. See [its README](apps/desktop/README.md).
 
 ## Search
 

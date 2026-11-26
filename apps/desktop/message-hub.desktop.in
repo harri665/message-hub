@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Messages
+GenericName=Message Hub
+Comment=iMessage, SMS and WhatsApp in one inbox
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/message-hub
+Icon=message-hub
+Terminal=false
+Categories=Network;InstantMessaging;Chat;
+Keywords=imessage;sms;whatsapp;chat;texts;
+StartupWMClass=message-hub
+SingleMainWindow=true
+Actions=quit;
+
+[Desktop Action quit]
+Name=Quit Messages
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/message-hub --quit

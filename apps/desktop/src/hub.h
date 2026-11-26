@@ -1,0 +1,177 @@
+#pragma once
+
+#include <QHash>
+#include <QJsonDocument>
+#include <QNetworkAccessManager>
+#include <QObject>
+#include <QTimer>
+#include <QUrl>
+#include <QVariantMap>
+#include <QWebSocket>
+#include <functional>
+#include <qqmlintegration.h>
+
+#include "listmodel.h"
+
+class QQmlEngine;
+class QJSEngine;
+class QNetworkReply;
+
+// Everything that talks to the message hub: sign-in, the inbox, the open thread, sending, search, the live socket,
+// attachments and desktop notifications. Lives for the whole process, so the socket and notifications keep working
+// after the window is closed (the window and all of QML are freed then, see main.cpp).
+class Hub : public QObject {
+    Q_OBJECT
+    QML_ELEMENT
+    QML_SINGLETON
+    Q_PROPERTY(QString server READ server NOTIFY serverChanged)
+    Q_PROPERTY(bool signedIn READ signedIn NOTIFY signedInChanged)
+    Q_PROPERTY(bool online READ online NOTIFY onlineChanged)
+    Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
+    Q_PROPERTY(QString error READ error NOTIFY errorChanged)
+    Q_PROPERTY(JsonListModel *threads READ threads CONSTANT)
+    Q_PROPERTY(JsonListModel *messages READ messages CONSTANT)
+    Q_PROPERTY(JsonListModel *results READ results CONSTANT)
+    Q_PROPERTY(QString filter READ filter WRITE setFilter NOTIFY filterChanged)
+    Q_PROPERTY(QString currentTid READ currentTid NOTIFY currentChanged)
+    Q_PROPERTY(QVariantMap current READ current NOTIFY currentChanged)
+    Q_PROPERTY(bool hasOlder READ hasOlder NOTIFY olderChanged)
+    Q_PROPERTY(bool loadingOlder READ loadingOlder NOTIFY olderChanged)
+    Q_PROPERTY(int unreadTotal READ unreadTotal NOTIFY unreadTotalChanged)
+    Q_PROPERTY(bool windowActive READ windowActive WRITE setWindowActive NOTIFY windowActiveChanged)
+
+public:
+    static Hub *instance();
+    static Hub *create(QQmlEngine *, QJSEngine *);
+
+    QString server() const { return m_server; }
+    bool signedIn() const { return !m_token.isEmpty(); }
+    bool online() const { return m_online; }
+    bool busy() const { return m_busy; }
+    QString error() const { return m_error; }
+    JsonListModel *threads() { return &m_threadModel; }
+    JsonListModel *messages() { return &m_messageModel; }
+    JsonListModel *results() { return &m_resultModel; }
+    QString filter() const { return m_filter; }
+    void setFilter(const QString &f);
+    QString currentTid() const { return m_tid; }
+    QVariantMap current() const { return m_detail; }
+    bool hasOlder() const { return m_hasOlder; }
+    bool loadingOlder() const { return m_loadingOlder; }
+    int unreadTotal() const { return m_unreadTotal; }
+    bool windowActive() const { return m_windowActive; }
+    void setWindowActive(bool a);
+
+    Q_INVOKABLE void login(const QString &server, const QString &password);
+    Q_INVOKABLE void logout();
+    Q_INVOKABLE void openThread(const QString &tid);
+    Q_INVOKABLE void closeThread();
+    Q_INVOKABLE void loadOlder();
+    Q_INVOKABLE void send(const QString &text, int conversationId, int replyToId);
+    Q_INVOKABLE void retry(const QString &localKey);
+    Q_INVOKABLE void pickFile(int conversationId);
+    Q_INVOKABLE void sendFiles(const QList<QUrl> &files, int conversationId);
+    Q_INVOKABLE void openAttachment(qint64 id, const QString &filename);
+    Q_INVOKABLE void copyText(const QString &text);
+    Q_INVOKABLE void refresh();
+    Q_INVOKABLE void openLink(const QString &url);
+    Q_INVOKABLE void clearError() { setError({}); }
+
+    // For the image provider: calls back on the main thread with a local file path (or an error).
+    void fetchAttachment(qint64 id, bool retry, std::function<void(QString path, QString error)> done);
+
+    // Called when the window goes away: drop the per-thread state so the process idles small.
+    void releaseView();
+    bool idle() const { return m_writes == 0; }
+
+signals:
+    void serverChanged();
+    void signedInChanged();
+    void onlineChanged();
+    void busyChanged();
+    void errorChanged();
+    void filterChanged();
+    void currentChanged();
+    void olderChanged();
+    void unreadTotalChanged();
+    void windowActiveChanged();
+    void showRequested(const QString &tid);
+
+private slots:
+    void onNotificationAction(uint id, const QString &action);
+    void onNotificationClosed(uint id, uint reason);
+    void onPortalResponse(uint response, const QVariantMap &results);
+
+private:
+    Hub();
+    using JsonCb = std::function<void(const QJsonDocument &)>;
+    using FailCb = std::function<void(int status, const QString &error)>;
+    QNetworkRequest request(const QString &path) const;
+    QNetworkReply *call(const QByteArray &verb, const QString &path, const QByteArray &body = {});
+    void handle(QNetworkReply *reply, JsonCb ok, FailCb fail = {});
+    void setError(const QString &e);
+    void setBusy(bool b);
+    void setToken(const QString &t);
+    void signedOut();
+
+    void loadThreads();
+    void applyThreads(const QList<QVariantMap> &rows, bool save);
+    void rebuildThreadModel();
+    QVariantMap decorateThread(QVariantMap t) const;
+    void refreshCurrent();
+    void applyMessages();
+    void markRead(const QString &tid);
+    qint64 newestId() const;
+    void search(const QString &q);
+    void scheduleThreads(int ms);
+
+    void connectLive();
+    void onLive(const QString &text);
+    void notify(const QVariantMap &preview);
+
+    void readConfig();
+    void writeConfig();
+    QString cacheFile(const QString &name) const;
+    void saveThreadCache(const QString &tid);
+
+    QString m_server;
+    QString m_token;
+    QString m_error;
+    bool m_busy = false;
+    bool m_online = false;
+    bool m_windowActive = false;
+    int m_unreadTotal = 0;
+    int m_writes = 0;  // sends still going out
+
+    QNetworkAccessManager m_nam;
+    QWebSocket m_ws;
+    QTimer m_reconnect;
+    int m_backoff = 1000;
+    QTimer m_threadsTimer;   // coalesces inbox refreshes
+    QTimer m_messagesTimer;  // coalesces open-thread refreshes
+    QTimer m_searchTimer;
+    QTimer m_clock;          // keeps "Yesterday" / weekday labels right
+    QNetworkReply *m_threadsReply = nullptr;
+
+    QList<QVariantMap> m_allThreads;
+    JsonListModel m_threadModel;
+    QString m_filter;
+    JsonListModel m_resultModel;
+
+    QString m_tid;
+    QVariantMap m_detail;
+    QList<QVariantMap> m_msgs;     // newest first, as the hub returned them
+    QList<QVariantMap> m_pending;  // messages being sent, newest first
+    JsonListModel m_messageModel;
+    bool m_hasOlder = false;
+    bool m_loadingOlder = false;
+    int m_generation = 0;  // bumps when the open thread changes, so late replies are dropped
+
+    int m_pickConversation = 0;
+    QString m_pickTid;
+    QString m_pickHandle;
+
+    QHash<qint64, QList<std::function<void(QString, QString)>>> m_fetching;
+    QHash<uint, QString> m_notifications;  // notification id -> tid
+    QHash<QString, uint> m_notificationByTid;
+};
