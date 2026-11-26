@@ -129,8 +129,11 @@ QQuickImageResponse *AttachmentImages::requestImageResponse(const QString &id, c
     const qint64 att = id.section('?', 0, 0).toLongLong();
     const bool retry = id.contains("retry=");
     QThreadPool *pool = &m_pool;
-    QMetaObject::invokeMethod(Hub::instance(), [r, att, retry, requested, pool] {
-        Hub::instance()->fetchAttachment(att, retry, [r, requested, pool](const QString &path, const QString &err) {
+    // Ask the hub for the smallest resized copy that covers the size on screen (older hubs ignore it).
+    const int want = requested.width() > 0 ? requested.width() : 1280;
+    const int width = want <= 320 ? 320 : want <= 640 ? 640 : 1280;
+    QMetaObject::invokeMethod(Hub::instance(), [r, att, width, retry, requested, pool] {
+        Hub::instance()->fetchAttachment(att, width, retry, [r, requested, pool](const QString &path, const QString &err) {
             if (!err.isEmpty()) {
                 r->error = err;
                 r->done();

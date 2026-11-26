@@ -893,28 +893,32 @@ void Hub::onPortalResponse(uint response, const QVariantMap &results) {
 
 // ---------- attachments ----------
 
-void Hub::fetchAttachment(qint64 id, bool retry, std::function<void(QString, QString)> done) {
-    const QString path = cacheFile("att/" + QString::number(id));
+void Hub::fetchAttachment(qint64 id, int width, bool retry, std::function<void(QString, QString)> done) {
+    const QString name = QString::number(id) + (width ? "w" + QString::number(width) : QString());
+    const QString path = cacheFile("att/" + name);
     if (QFileInfo::exists(path)) {
         done(path, {});
         return;
     }
-    auto it = m_fetching.find(id);
+    auto it = m_fetching.find(name);
     if (it != m_fetching.end()) {
         it->append(std::move(done));
         return;
     }
-    m_fetching.insert(id, {std::move(done)});
+    m_fetching.insert(name, {std::move(done)});
     QDir().mkpath(QFileInfo(path).absolutePath());
     auto *part = new QFile(path + ".part");
-    QNetworkReply *reply = m_nam.get(request("/api/attachments/" + QString::number(id) + (retry ? "?retry=1" : "")));
+    QUrlQuery qs;
+    if (width) qs.addQueryItem("w", QString::number(width));
+    if (retry) qs.addQueryItem("retry", "1");
+    QNetworkReply *reply = m_nam.get(request("/api/attachments/" + QString::number(id) + (qs.isEmpty() ? QString() : "?" + qs.toString())));
     part->setParent(reply);
     const bool opened = part->open(QIODevice::WriteOnly);
     // Stream to disk, so a large video never sits in memory.
     connect(reply, &QIODevice::readyRead, reply, [reply, part, opened] {
         if (opened && reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 200) part->write(reply->readAll());
     });
-    connect(reply, &QNetworkReply::finished, this, [this, reply, part, path, id, opened] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, part, path, name, opened] {
         reply->deleteLater();
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         QString err;
@@ -930,13 +934,13 @@ void Hub::fetchAttachment(qint64 id, bool retry, std::function<void(QString, QSt
             if (err.isEmpty()) err = status ? QStringLiteral("Not available (%1)").arg(status) : reply->errorString();
             if (status == 401 && signedIn()) signedOut();
         }
-        const auto callbacks = m_fetching.take(id);
+        const auto callbacks = m_fetching.take(name);
         for (const auto &cb : callbacks) cb(err.isEmpty() ? path : QString(), err);
     });
 }
 
 void Hub::openAttachment(qint64 id, const QString &filename) {
-    fetchAttachment(id, false, [this, id, filename](const QString &path, const QString &err) {
+    fetchAttachment(id, 0, false, [this, id, filename](const QString &path, const QString &err) {
         if (!err.isEmpty()) { setError(err); return; }
         // Open it under its real name, so the right app picks it up.
         QString name = QFileInfo(filename).fileName();
@@ -965,6 +969,9 @@ void Hub::connectLive() {
     u.setScheme(u.scheme() == "https" ? "wss" : "ws");
     QNetworkRequest r = request({});
     r.setUrl(u);
+    // The hub only lets its own pages open the live feed (it checks Origin against its host), so say where we belong.
+    const QUrl base(m_server);
+    r.setRawHeader("Origin", (base.scheme() + "://" + base.authority()).toUtf8());
     m_ws.open(r);
 }
 
@@ -1010,7 +1017,7 @@ void Hub::onLive(const QString &text) {
         scheduleThreads(3000);
     } else if (type == "conversation-updated") {
         scheduleThreads(1500);
-    } else if (type == "refresh") {
+    } else if (type == "refresh" || type == "send-request") {  // send-request: a message approved in the web app went out
         scheduleThreads(1500);
         if (!m_tid.isEmpty()) m_messagesTimer.start();
     }

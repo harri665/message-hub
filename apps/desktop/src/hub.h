@@ -78,7 +78,8 @@ public:
     Q_INVOKABLE void clearError() { setError({}); }
 
     // For the image provider: calls back on the main thread with a local file path (or an error).
-    void fetchAttachment(qint64 id, bool retry, std::function<void(QString path, QString error)> done);
+    // width 0 = the original; otherwise the hub's resized copy (320, 640 or 1280 px wide).
+    void fetchAttachment(qint64 id, int width, bool retry, std::function<void(QString path, QString error)> done);
 
     // Called when the window goes away: drop the per-thread state so the process idles small.
     void releaseView();
@@ -171,7 +172,7 @@ private:
     QString m_pickTid;
     QString m_pickHandle;
 
-    QHash<qint64, QList<std::function<void(QString, QString)>>> m_fetching;
+    QHash<QString, QList<std::function<void(QString, QString)>>> m_fetching;
     QHash<uint, QString> m_notifications;  // notification id -> tid
     QHash<QString, uint> m_notificationByTid;
 };
