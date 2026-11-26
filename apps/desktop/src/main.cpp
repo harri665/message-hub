@@ -2,6 +2,7 @@
 #include <QFont>
 #include <QGuiApplication>
 #include <QImageReader>
+#include <QJsonDocument>
 #include <QJSEngine>
 #include <QLocalServer>
 #include <QMimeDatabase>
@@ -25,6 +26,60 @@
 App *App::instance() {
     static App *a = new App;
     return a;
+}
+
+App::App() {
+    m_islandState.setSingleShot(true);
+    m_islandState.setInterval(200);
+    connect(&m_islandState, &QTimer::timeout, this, [this] { toIslands(Hub::instance()->islandState(6)); });
+    connect(Hub::instance(), &Hub::inboxChanged, &m_islandState, qOverload<>(&QTimer::start));
+    connect(Hub::instance(), &Hub::incoming, this, [this](const QVariantMap &m) {
+        QJsonObject o = QJsonObject::fromVariantMap(m);
+        o.insert("type", "message");
+        toIslands(o);
+    });
+    connect(Hub::instance(), &Hub::sendResult, this, [this](const QString &tid, bool ok, const QString &error) {
+        toIslands({{"type", "sent"}, {"tid", tid}, {"ok", ok}, {"error", error}});
+    });
+}
+
+// ---------- MacShell's Dynamic Island ----------
+// The island connects to the same local socket and sends "island". From then on it gets JSON lines:
+//   {"type":"state", signedIn, online, unread, threads:[{tid,title,initials,time,preview,unread,service,isGroup}]}
+//   {"type":"message", tid, sender, title, initials, text, service, is_group, time}   (someone wrote to me)
+//   {"type":"sent", tid, ok, error}
+// and can send {"cmd":"send","tid","text"}, {"cmd":"open","tid"}, {"cmd":"read","tid"}, {"cmd":"refresh"}.
+void App::addIslandClient(QLocalSocket *s) {
+    if (m_islands.contains(s)) return;
+    m_islands << s;
+    Hub::instance()->setIslandClients(int(m_islands.size()));
+    connect(s, &QObject::destroyed, this, [this, s] {
+        m_islands.removeAll(s);
+        Hub::instance()->setIslandClients(int(m_islands.size()));
+    });
+    s->write(QJsonDocument(Hub::instance()->islandState(6)).toJson(QJsonDocument::Compact) + '\n');
+}
+
+void App::toIslands(const QJsonObject &message) {
+    if (m_islands.isEmpty()) return;
+    const QByteArray line = QJsonDocument(message).toJson(QJsonDocument::Compact) + '\n';
+    for (QLocalSocket *s : std::as_const(m_islands))
+        if (s->state() == QLocalSocket::ConnectedState) s->write(line);
+}
+
+void App::handleLine(QLocalSocket *from, const QString &line) {
+    if (line == "quit") quit();
+    else if (line == "island") addIslandClient(from);
+    else if (line.startsWith("show")) showWindow(line.mid(5).trimmed());
+    else if (line.startsWith("dev ") && qEnvironmentVariableIsSet("MESSAGE_HUB_DEV")) dev(line.mid(4));
+    else if (line.startsWith('{')) {
+        const QJsonObject o = QJsonDocument::fromJson(line.toUtf8()).object();
+        const QString cmd = o.value("cmd").toString(), tid = o.value("tid").toString();
+        if (cmd == "send") Hub::instance()->sendTo(tid, o.value("text").toString());
+        else if (cmd == "open") showWindow(tid);
+        else if (cmd == "read" && !tid.isEmpty()) Hub::instance()->markReadNow(tid);
+        else if (cmd == "refresh") Hub::instance()->refresh();
+    }
 }
 
 App *App::create(QQmlEngine *, QJSEngine *) {
@@ -205,12 +260,7 @@ int main(int argc, char *argv[]) {
     QObject::connect(&server, &QLocalServer::newConnection, &app, [&server] {
         while (QLocalSocket *s = server.nextPendingConnection()) {
             QObject::connect(s, &QLocalSocket::readyRead, s, [s] {
-                while (s->canReadLine()) {
-                    const QString line = QString::fromUtf8(s->readLine()).trimmed();
-                    if (line == "quit") App::instance()->quit();
-                    else if (line.startsWith("show")) App::instance()->showWindow(line.mid(5).trimmed());
-                    else if (line.startsWith("dev ") && qEnvironmentVariableIsSet("MESSAGE_HUB_DEV")) App::instance()->dev(line.mid(4));
-                }
+                while (s->canReadLine()) App::instance()->handleLine(s, QString::fromUtf8(s->readLine()).trimmed());
             });
             QObject::connect(s, &QLocalSocket::disconnected, s, &QObject::deleteLater);
         }

@@ -204,6 +204,9 @@ Hub::Hub()
     bus.connect("org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications",
                 "NotificationClosed", this, SLOT(onNotificationClosed(uint, uint)));
 
+    connect(this, &Hub::onlineChanged, this, &Hub::inboxChanged);
+    connect(this, &Hub::signedInChanged, this, &Hub::inboxChanged);
+
     readConfig();
 
     // Show the last inbox at once; the hub's answer replaces it when it arrives.
@@ -432,6 +435,7 @@ void Hub::applyThreads(const QList<QVariantMap> &rows, bool save) {
 }
 
 void Hub::rebuildThreadModel() {
+    emit inboxChanged();
     int unread = 0;
     for (const auto &t : std::as_const(m_allThreads)) unread += t.value("unread").toInt();
     if (unread != m_unreadTotal) {
@@ -769,16 +773,7 @@ void Hub::send(const QString &textIn, int conversationId, int replyToId) {
     m_pending.prepend(p);
     applyMessages();
 
-    // Move the chat to the top of the inbox straight away.
-    for (int i = 0; i < m_allThreads.size(); ++i)
-        if (m_allThreads.at(i).value("tid") == m_tid) {
-            QVariantMap t = m_allThreads.takeAt(i);
-            t["last_body"] = text; t["last_from_me"] = true; t["last_at"] = isoNow(); t["last_unsent"] = false;
-            t["last_has_attachment"] = false;
-            m_allThreads.prepend(decorateThread(t));
-            rebuildThreadModel();
-            break;
-        }
+    moveToTop(m_tid, text);
 
     QJsonObject body{{"text", text}};
     if (conversationId) body.insert("conversationId", conversationId);
@@ -792,9 +787,54 @@ void Hub::send(const QString &textIn, int conversationId, int replyToId) {
         applyMessages();
     };
     ++m_writes;
+    const QString tid = m_tid;
     handle(call("POST", "/api/threads/" + m_tid + "/send", QJsonDocument(body).toJson()),
-           [this, mark](const QJsonDocument &) { --m_writes; mark("sent"); m_messagesTimer.start(); },
-           [this, mark](int, const QString &e) { --m_writes; mark("failed"); setError(e); });
+           [this, mark, tid](const QJsonDocument &) { --m_writes; mark("sent"); m_messagesTimer.start(); emit sendResult(tid, true, {}); },
+           [this, mark, tid](int, const QString &e) { --m_writes; mark("failed"); setError(e); emit sendResult(tid, false, e); });
+}
+
+// Move a chat to the top of the inbox with what I just sent, before the hub confirms it.
+void Hub::moveToTop(const QString &tid, const QString &text) {
+    for (int i = 0; i < m_allThreads.size(); ++i)
+        if (m_allThreads.at(i).value("tid") == tid) {
+            QVariantMap t = m_allThreads.takeAt(i);
+            t["last_body"] = text; t["last_from_me"] = true; t["last_at"] = isoNow(); t["last_unsent"] = false;
+            t["last_has_attachment"] = false; t["unread"] = 0;
+            m_allThreads.prepend(decorateThread(t));
+            rebuildThreadModel();
+            return;
+        }
+}
+
+void Hub::sendTo(const QString &tid, const QString &textIn) {
+    const QString text = textIn.trimmed();
+    if (tid.isEmpty() || text.isEmpty() || !signedIn()) {
+        emit sendResult(tid, false, signedIn() ? QStringLiteral("Nothing to send") : QStringLiteral("Not signed in"));
+        return;
+    }
+    if (tid == m_tid) {  // the open chat: the usual path, so the window shows it as it goes out
+        send(text, 0, 0);
+        return;
+    }
+    moveToTop(tid, text);
+    markRead(tid);  // replying means it has been seen
+    ++m_writes;
+    handle(call("POST", "/api/threads/" + tid + "/send", QJsonDocument(QJsonObject{{"text", text}}).toJson()),
+           [this, tid](const QJsonDocument &) { --m_writes; scheduleThreads(1500); emit sendResult(tid, true, {}); },
+           [this, tid](int, const QString &e) { --m_writes; scheduleThreads(0); emit sendResult(tid, false, e); });
+}
+
+QJsonObject Hub::islandState(int threads) const {
+    QJsonArray list;
+    for (int i = 0; i < m_allThreads.size() && i < threads; ++i) {
+        const QVariantMap &t = m_allThreads.at(i);
+        list << QJsonObject{{"tid", t.value("tid").toString()}, {"title", t.value("title").toString()},
+                            {"initials", t.value("initials").toString()}, {"time", t.value("time").toString()},
+                            {"preview", t.value("preview").toString()}, {"unread", t.value("unread").toInt()},
+                            {"service", t.value("service").toString()}, {"isGroup", t.value("isGroup").toBool()}};
+    }
+    return QJsonObject{{"type", "state"}, {"signedIn", signedIn()}, {"online", m_online}, {"unread", m_unreadTotal},
+                       {"threads", list}};
 }
 
 void Hub::retry(const QString &localKey) {
@@ -1011,7 +1051,19 @@ void Hub::onLive(const QString &text) {
         }
         // The local patch shows it at once; the hub's own list follows a little later.
         scheduleThreads(patched ? 5000 : 300);
-        if (!fromMe && !preview.isEmpty()) notify(preview);
+        if (!fromMe && !preview.isEmpty()) {
+            QVariantMap m = preview;
+            QString who = preview.value("sender_name").toString();
+            if (who.isEmpty()) who = preview.value("title").toString();
+            QString body = oneLine(preview.value("body").toString().remove(QChar(0xFFFC)), 300);
+            if (body.isEmpty() && preview.value("has_attachment").toBool()) body = QStringLiteral("Sent an attachment");
+            m["sender"] = who;
+            m["initials"] = initialsOf(preview.value("is_group").toBool() && !preview.value("title").toString().isEmpty() ? preview.value("title").toString() : who);
+            m["text"] = body;
+            m["time"] = clockText(QDateTime::currentDateTime());
+            emit incoming(m);
+            if (m_islandClients == 0) notify(preview);  // the island shows it instead
+        }
     } else if (type == "message-updated") {
         if (inCurrent) m_messagesTimer.start();
         scheduleThreads(3000);

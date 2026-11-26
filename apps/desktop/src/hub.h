@@ -77,6 +77,15 @@ public:
     Q_INVOKABLE void openLink(const QString &url);
     Q_INVOKABLE void clearError() { setError({}); }
 
+    // ---- for MacShell's Dynamic Island (see App::addIslandClient) ----
+    // Send to any chat, open or not; the outcome comes back through sendResult().
+    void sendTo(const QString &tid, const QString &text);
+    void markReadNow(const QString &tid) { markRead(tid); }
+    // The inbox for the island: sign-in state, connection, unread total and the most recent chats.
+    QJsonObject islandState(int threads) const;
+    // While the island is listening it shows new messages itself, so the app stops sending desktop notifications.
+    void setIslandClients(int n) { m_islandClients = n; }
+
     // For the image provider: calls back on the main thread with a local file path (or an error).
     // width 0 = the original; otherwise the hub's resized copy (320, 640 or 1280 px wide).
     void fetchAttachment(qint64 id, int width, bool retry, std::function<void(QString path, QString error)> done);
@@ -97,6 +106,9 @@ signals:
     void unreadTotalChanged();
     void windowActiveChanged();
     void showRequested(const QString &tid);
+    void inboxChanged();
+    void incoming(const QVariantMap &message);  // a new message from someone else
+    void sendResult(const QString &tid, bool ok, const QString &error);
 
 private slots:
     void onNotificationAction(uint id, const QString &action);
@@ -123,6 +135,7 @@ private:
     void applyMessages();
     void markRead(const QString &tid);
     qint64 newestId() const;
+    void moveToTop(const QString &tid, const QString &text);
     void search(const QString &q);
     void scheduleThreads(int ms);
 
@@ -143,6 +156,7 @@ private:
     bool m_windowActive = false;
     int m_unreadTotal = 0;
     int m_writes = 0;  // sends still going out
+    int m_islandClients = 0;
 
     QNetworkAccessManager m_nam;
     QWebSocket m_ws;

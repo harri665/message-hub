@@ -1,6 +1,10 @@
 #pragma once
 
+#include <QJsonObject>
+#include <QList>
+#include <QLocalSocket>
 #include <QObject>
+#include <QTimer>
 #include <QPointer>
 #include <QQuickAsyncImageProvider>
 #include <QThreadPool>
@@ -25,10 +29,15 @@ public:
     Q_INVOKABLE void quit();
     void dev(const QString &command);
     void restartWhenIdle();
+    void handleLine(QLocalSocket *from, const QString &line);
 
 private:
-    App() = default;
+    App();
+    void addIslandClient(QLocalSocket *s);
+    void toIslands(const QJsonObject &message);
     QPointer<QQmlApplicationEngine> m_engine;
+    QList<QLocalSocket *> m_islands;
+    QTimer m_islandState;  // coalesces inbox changes into one state message
 };
 
 // image://att/<attachment id>: downloads once into the disk cache, then decodes on a worker thread at the size the
