@@ -8,11 +8,17 @@ import { initAuth, registerAuthRoutes } from './auth.js';
 import { config } from './config.js';
 import { migrate } from './db.js';
 import { registerApiRoutes } from './routes/api.js';
+import { redactUrl, registerMcp } from './mcp.js';
 import { BlueBubbles } from './sources/bluebubbles.js';
 import { WhatsApp } from './sources/whatsapp.js';
 
 const app = Fastify({
-  logger: { level: process.env.LOG_LEVEL ?? 'info' },
+  logger: {
+    level: process.env.LOG_LEVEL ?? 'info',
+    serializers: {
+      req: (req) => ({ method: req.method, url: redactUrl(req.url), host: req.host, remoteAddress: req.ip }),
+    },
+  },
   trustProxy: true,
   bodyLimit: 2 * 1024 * 1024,
 });
@@ -46,6 +52,7 @@ const wa = new WhatsApp(app.log);
 await initAuth(app.log);
 registerAuthRoutes(app);
 registerApiRoutes(app, bb, wa);
+registerMcp(app);
 
 app.setErrorHandler((err: any, _req, reply) => {
   const status = err.statusCode ?? 500;

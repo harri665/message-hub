@@ -17,6 +17,8 @@ export const config = {
   webDir: path.resolve(process.env.WEB_DIR ?? '../web/dist'),
   migrationsDir: path.resolve(process.env.MIGRATIONS_DIR ?? './migrations'),
   defaultCountryCode: process.env.DEFAULT_COUNTRY_CODE ?? '1',
+  /** IANA time zone used when the MCP server shows message times, e.g. America/Denver. */
+  timeZone: process.env.TIME_ZONE || 'UTC',
   bluebubbles: {
     url: (process.env.BLUEBUBBLES_URL ?? '').replace(/\/+$/, ''),
     password: process.env.BLUEBUBBLES_PASSWORD ?? '',

@@ -45,6 +45,81 @@ function BlueBubblesForm({ currentUrl, onSaved }: { currentUrl: string | null; o
   );
 }
 
+function CopyField({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="copy-field">
+      <span className="copy-label">{label}</span>
+      <code>{value}</code>
+      <button
+        type="button"
+        className="link-btn"
+        onClick={() => navigator.clipboard?.writeText(value).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); })}
+      >
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+    </div>
+  );
+}
+
+/** Access tokens for the MCP server, so Claude can search and read messages. */
+function ClaudeAccess() {
+  const qc = useQueryClient();
+  const list = useQuery({ queryKey: ['mcp-tokens'], queryFn: api.mcpTokens });
+  const [created, setCreated] = useState<{ name: string; token: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const origin = location.origin;
+  const create = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setCreated(await api.createMcpToken('Claude'));
+      qc.invalidateQueries({ queryKey: ['mcp-tokens'] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create a token');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const revoke = async (id: string) => {
+    await api.deleteMcpToken(id).catch(() => {});
+    qc.invalidateQueries({ queryKey: ['mcp-tokens'] });
+  };
+  return (
+    <div className="group">
+      <div className="group-body">
+        <p style={{ margin: 0 }}>
+          Let Claude search and read your messages through MCP. Access is read-only: Claude can't send anything.
+        </p>
+        {created ? (
+          <>
+            <p className="note">Copy this now. The token won't be shown again.</p>
+            <CopyField
+              label="Claude Code"
+              value={`claude mcp add --transport http --scope user messages ${origin}/mcp --header "Authorization: Bearer ${created.token}"`}
+            />
+            <CopyField label="Connector URL (claude.ai, needs an https address)" value={`${origin}/mcp/${created.token}`} />
+            <div><button className="pill-btn" onClick={() => setCreated(null)}>Done</button></div>
+          </>
+        ) : (
+          <div><button className="pill-btn primary" disabled={busy} onClick={create}>{busy ? 'Creating' : 'Create access token'}</button></div>
+        )}
+        {error && <p className="form-error" role="alert">{error}</p>}
+      </div>
+      {list.data?.map((t) => (
+        <div key={t.id} className="group-row">
+          <span>
+            {t.name}
+            <span className="value"> created {listTime(t.createdAt)}, {t.lastUsedAt ? `last used ${listTime(t.lastUsedAt)}` : 'not used yet'}</span>
+          </span>
+          <button className="link-btn danger" onClick={() => revoke(t.id)}>Revoke</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function Settings({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const status = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: (q) => (q.state.data?.whatsapp.pairing ? 3000 : 15000) });
@@ -156,6 +231,9 @@ export function Settings({ onClose }: { onClose: () => void }) {
             </div>
           )}
         </div>
+
+        <h3 className="group-title">Claude</h3>
+        <ClaudeAccess />
 
         <h3 className="group-title">Notifications</h3>
         <div className="group">

@@ -7,20 +7,24 @@ import { Sidebar } from './components/Sidebar.tsx';
 import { ThreadView } from './components/ThreadView.tsx';
 import { Settings } from './components/Settings.tsx';
 
-function readHash(): string | null {
-  const m = location.hash.match(/^#\/t\/([pc]\d+)/);
-  return m ? m[1] : null;
+interface Route { tid: string | null; focus: number | null }
+
+/** #/t/p12 opens a conversation; #/t/p12/m/345 opens it at message 345. */
+function readHash(): Route {
+  const m = location.hash.match(/^#\/t\/([pc]\d+)(?:\/m\/(\d+))?/);
+  return { tid: m ? m[1] : null, focus: m?.[2] ? Number(m[2]) : null };
 }
 
 export function App() {
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ['me'], queryFn: api.me, staleTime: Infinity });
-  const [tid, setTid] = useState<string | null>(readHash);
+  const [route, setRoute] = useState<Route>(readHash);
+  const { tid, focus } = route;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const loggedIn = !!me.data?.loggedIn;
 
   useEffect(() => {
-    const onHash = () => setTid(readHash());
+    const onHash = () => setRoute(readHash());
     const onLoggedOut = () => qc.invalidateQueries({ queryKey: ['me'] });
     window.addEventListener('hashchange', onHash);
     window.addEventListener('mh:logged-out', onLoggedOut);
@@ -32,8 +36,8 @@ export function App() {
 
   useLive(loggedIn, tid);
 
-  const open = (next: string | null) => {
-    location.hash = next ? `#/t/${next}` : '#/';
+  const open = (next: string | null, messageId?: number) => {
+    location.hash = next ? `#/t/${next}${messageId ? `/m/${messageId}` : ''}` : '#/';
   };
 
   if (me.isPending) return <div className="boot" aria-busy="true" />;
@@ -46,7 +50,13 @@ export function App() {
       <Sidebar activeTid={tid} onOpen={open} onSettings={() => setSettingsOpen(true)} />
       <main className="pane glass-thin">
         {tid ? (
-          <ThreadView key={tid} tid={tid} onBack={() => open(null)} />
+          <ThreadView
+            key={tid}
+            tid={tid}
+            focus={focus}
+            onFocus={(id) => open(tid, id ?? undefined)}
+            onBack={() => open(null)}
+          />
         ) : (
           <div className="pane-empty">
             <p>Choose a conversation.</p>

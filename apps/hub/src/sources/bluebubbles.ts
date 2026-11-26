@@ -56,7 +56,7 @@ export class BlueBubbles {
   private conn = { url: config.bluebubbles.url, password: config.bluebubbles.password };
   private timer?: NodeJS.Timeout;
   /** iCloud downloads go through Messages on the Mac; a few at a time keeps it responsive. */
-  private icloudSlots = new Limiter(3);
+  private icloudSlots = new Limiter(2);
 
   constructor(private log: Log) {}
 
@@ -398,7 +398,10 @@ export class BlueBubbles {
       // Photos synced from Messages in iCloud stay in iCloud until opened on the Mac. The Private API can
       // make Messages fetch them ("force" download); without it there is nothing to download.
       if (!/does not exist in disk/i.test(detail)) throw new Error(`attachment download failed: ${res.status}`);
-      res = await this.icloudSlots.run(() => fetch(this.url(`/attachment/${guid}/download/force`), { signal: AbortSignal.timeout(300_000) }));
+      // Some iCloud downloads never finish; give up after 90 s so they don't tie up the Mac.
+      res = await this.icloudSlots
+        .run(() => fetch(this.url(`/attachment/${guid}/download/force`), { signal: AbortSignal.timeout(90_000) }))
+        .catch(() => new Response('{"error":"timed out"}', { status: 504, headers: { 'content-type': 'application/json' } }));
       if (!res.ok || (res.headers.get('content-type') ?? '').includes('application/json')) {
         const why = await res.text().catch(() => '');
         res = await fetch(this.url(`/attachment/${guid}/download`), { signal: AbortSignal.timeout(300_000) });

@@ -77,14 +77,14 @@ function statusText(m: Message) {
 }
 
 export function MessageBubble({
-  m, isGroup, firstInRun, lastInRun, showStatus, onReply, onOpenImage,
+  m, isGroup, firstInRun, lastInRun, showStatus, highlighted, onReply, onOpenImage,
 }: {
-  m: Message; isGroup: boolean; firstInRun: boolean; lastInRun: boolean; showStatus: boolean; onReply: () => void;
+  m: Message; isGroup: boolean; firstInRun: boolean; lastInRun: boolean; showStatus: boolean; highlighted?: boolean; onReply: () => void;
   onOpenImage: (src: string) => void;
 }) {
   if (m.kind === 'system') {
     return (
-      <p className="system-msg">
+      <p className={`system-msg ${highlighted ? 'hit' : ''}`} data-mid={m.id}>
         {m.from_me ? 'You' : m.sender_name ?? 'Someone'} {m.body}
       </p>
     );
@@ -92,7 +92,10 @@ export function MessageBubble({
   const side = m.from_me ? 'out' : 'in';
   const hasText = !!m.body && !m.unsent;
   return (
-    <div className={`msg ${side} ${serviceClass(m.service)} ${firstInRun ? 'first' : ''} ${lastInRun ? 'last' : ''}`}>
+    <div
+      className={`msg ${side} ${serviceClass(m.service)} ${firstInRun ? 'first' : ''} ${lastInRun ? 'last' : ''} ${highlighted ? 'hit' : ''}`}
+      data-mid={m.id}
+    >
       {isGroup && !m.from_me && firstInRun && <span className="msg-sender">{m.sender_name}</span>}
       <div className="msg-row">
         <div className={`msg-stack ${m.reactions.length ? 'has-reactions' : ''}`} title={`${fullTime(m.sent_at)} via ${SERVICE_LABEL[m.service]}`}>

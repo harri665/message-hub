@@ -52,7 +52,13 @@ export interface Message {
   reply_to_name: string | null;
 }
 
-export interface SearchResult extends Message { tid: string; thread_title: string | null }
+export interface SearchResult extends Message { tid: string; thread_title: string | null; is_group: boolean; snippet: string | null }
+
+export interface MessagePage { before?: string; after?: string; around?: number }
+
+export interface McpToken { id: string; name: string; createdAt: string; lastUsedAt: string | null }
+
+export type SearchService = 'apple' | 'whatsapp' | '';
 
 export interface Status {
   bluebubbles: {
@@ -98,8 +104,13 @@ export const api = {
   status: () => request<Status>('/api/status'),
   threads: () => request<ThreadSummary[]>('/api/threads?limit=300'),
   thread: (tid: string) => request<ThreadDetail>(`/api/threads/${tid}`),
-  messages: (tid: string, before?: string) =>
-    request<Message[]>(`/api/threads/${tid}/messages?limit=60${before ? `&before=${encodeURIComponent(before)}` : ''}`),
+  messages: (tid: string, page: MessagePage = {}) => {
+    const qs = new URLSearchParams({ limit: '60' });
+    if (page.before) qs.set('before', page.before);
+    if (page.after) qs.set('after', page.after);
+    if (page.around) qs.set('around', String(page.around));
+    return request<Message[]>(`/api/threads/${tid}/messages?${qs}`);
+  },
   markRead: (tid: string) => post(`/api/threads/${tid}/read`),
   send: (tid: string, body: { text: string; conversationId?: number; replyToId?: number }) => post(`/api/threads/${tid}/send`, body),
   sendFile: (tid: string, file: File, conversationId?: number, caption?: string) => {
@@ -110,7 +121,15 @@ export const api = {
     form.set('file', file);
     return post(`/api/threads/${tid}/send-file`, form);
   },
-  search: (q: string) => request<SearchResult[]>(`/api/search?q=${encodeURIComponent(q)}`),
+  search: (q: string, opts: { tid?: string; service?: SearchService; limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams({ q, limit: String(opts.limit ?? 40), offset: String(opts.offset ?? 0) });
+    if (opts.tid) qs.set('tid', opts.tid);
+    if (opts.service) qs.set('service', opts.service);
+    return request<SearchResult[]>(`/api/search?${qs}`);
+  },
+  mcpTokens: () => request<McpToken[]>('/api/mcp/tokens'),
+  createMcpToken: (name: string) => post<{ id: string; name: string; token: string }>('/api/mcp/tokens', { name }),
+  deleteMcpToken: (id: string) => request<{ ok: true }>(`/api/mcp/tokens/${id}`, { method: 'DELETE' }),
   waPair: () => post('/api/whatsapp/pair'),
   waLogout: () => post('/api/whatsapp/logout'),
 };

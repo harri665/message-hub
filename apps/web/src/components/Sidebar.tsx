@@ -1,7 +1,8 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { api, SERVICE_LABEL, type ThreadSummary } from '../api.ts';
 import { initials, listTime, serviceClass } from '../format.ts';
+import { Highlight } from './Highlight.tsx';
 
 type Filter = 'all' | 'unread' | 'apple' | 'whatsapp';
 const FILTERS: { key: Filter; label: string }[] = [
@@ -20,14 +21,28 @@ function preview(t: ThreadSummary) {
   return body;
 }
 
-export function Sidebar({ activeTid, onOpen, onSettings }: { activeTid: string | null; onOpen: (tid: string) => void; onSettings: () => void }) {
+const SEARCH_PAGE = 40;
+
+export function Sidebar({ activeTid, onOpen, onSettings }: {
+  activeTid: string | null;
+  onOpen: (tid: string, messageId?: number) => void;
+  onSettings: () => void;
+}) {
   const threads = useQuery({ queryKey: ['threads'], queryFn: api.threads, refetchInterval: 60_000 });
   const status = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 30_000 });
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const searchRef = useRef<HTMLInputElement>(null);
   const deferred = useDeferredValue(query.trim());
-  const search = useQuery({ queryKey: ['search', deferred], queryFn: () => api.search(deferred), enabled: deferred.length >= 2 });
+  const searchService = filter === 'apple' || filter === 'whatsapp' ? filter : '';
+  const search = useInfiniteQuery({
+    queryKey: ['search', deferred, searchService],
+    queryFn: ({ pageParam }) => api.search(deferred, { service: searchService, limit: SEARCH_PAGE, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (last, all) => (last.length < SEARCH_PAGE ? undefined : all.length * SEARCH_PAGE),
+    enabled: deferred.length >= 2,
+  });
+  const hits = useMemo(() => search.data?.pages.flat() ?? [], [search.data]);
 
   // Ctrl/Cmd+K jumps to search from anywhere.
   useEffect(() => {
@@ -76,7 +91,7 @@ export function Sidebar({ activeTid, onOpen, onSettings }: { activeTid: string |
           ref={searchRef}
           className="search-field"
           type="search"
-          placeholder="Search (Ctrl+K)"
+          placeholder="Search people and messages (Ctrl+K)"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => e.key === 'Escape' && setQuery('')}
@@ -133,16 +148,26 @@ export function Sidebar({ activeTid, onOpen, onSettings }: { activeTid: string |
           <section className="search-results" aria-label="Matching messages">
             <h2>Messages</h2>
             {search.isPending && <p className="list-note">Searching</p>}
-            {search.data && !search.data.length && <p className="list-note">No messages match "{deferred}".</p>}
-            {search.data?.map((m) => (
-              <button key={m.id} className="search-row" onClick={() => onOpen(m.tid)}>
+            {search.isError && <p className="list-note">Search failed. {search.error.message}</p>}
+            {search.data && !hits.length && <p className="list-note">No messages match "{deferred}".</p>}
+            {hits.map((m) => (
+              <button key={m.id} className="search-row" onClick={() => onOpen(m.tid, m.id)}>
                 <span className="thread-top">
                   <span className="thread-title">{m.thread_title ?? m.sender_name}</span>
                   <time className="thread-time">{listTime(m.sent_at)}</time>
                 </span>
-                <span className="search-body">{m.from_me ? 'You: ' : ''}{m.body}</span>
+                <span className="search-body">
+                  <span className={`svc-dot ${serviceClass(m.service)}`} title={SERVICE_LABEL[m.service]} />
+                  {m.from_me ? 'You: ' : m.is_group && m.sender_name ? `${m.sender_name}: ` : ''}
+                  <Highlight text={m.snippet ?? m.body ?? ''} />
+                </span>
               </button>
             ))}
+            {search.hasNextPage && (
+              <button className="pill-btn more" onClick={() => search.fetchNextPage()} disabled={search.isFetchingNextPage}>
+                {search.isFetchingNextPage ? 'Loading' : 'Show more results'}
+              </button>
+            )}
           </section>
         )}
       </nav>

@@ -8,52 +8,7 @@ import { q, q1 } from '../db.js';
 import type { BlueBubbles } from '../sources/bluebubbles.js';
 import type { WhatsApp } from '../sources/whatsapp.js';
 import { bus, emitLive, type LiveEvent } from '../store.js';
-
-interface ConvRow {
-  id: number; network: 'apple' | 'whatsapp'; source_id: string; title: string | null; is_group: boolean;
-  last_message_at: string | null; unread_count: number;
-}
-
-const MESSAGE_COLUMNS = `
-  m.id, m.conversation_id, m.service, m.from_me, m.kind, m.body, m.sent_at, m.delivered_at, m.read_at, m.edited_at,
-  m.unsent, m.status,
-  sh.person_id as sender_person_id,
-  coalesce(spn.name, spa.address, sh.address) as sender_name,
-  coalesce((select json_agg(json_build_object('id', a.id, 'mime', a.mime, 'filename', a.filename, 'size', a.size,
-                                              'width', a.width, 'height', a.height) order by a.id)
-            from attachment a where a.message_id = m.id), '[]') as attachments,
-  coalesce((select json_agg(json_build_object('emoji', r.emoji, 'fromMe', r.sender_key = 'me',
-                                              'name', coalesce(rpn.name, rh.address)) order by r.created_at)
-            from reaction r left join handle rh on rh.id = r.sender_handle_id
-            left join person_name rpn on rpn.person_id = rh.person_id
-            where r.message_id = m.id), '[]') as reactions,
-  rt.id as reply_to_id, left(rt.body, 200) as reply_to_body, rt.from_me as reply_to_from_me,
-  coalesce(rtn.name, rth.address) as reply_to_name`;
-
-const MESSAGE_JOINS = `
-  left join handle sh on sh.id = m.sender_handle_id
-  left join person_name spn on spn.person_id = sh.person_id
-  left join person_address spa on spa.person_id = sh.person_id
-  left join message rt on m.reply_to_source_id is not null and rt.source_id = m.reply_to_source_id and rt.conversation_id = m.conversation_id
-  left join handle rth on rth.id = rt.sender_handle_id
-  left join person_name rtn on rtn.person_id = rth.person_id`;
-
-async function threadConversations(tid: string): Promise<ConvRow[]> {
-  const id = Number(tid.slice(1));
-  if (!Number.isFinite(id)) return [];
-  if (tid.startsWith('p')) {
-    return q<ConvRow>(
-      `select distinct c.* from conversation c
-       join conversation_member cm on cm.conversation_id = c.id
-       join handle h on h.id = cm.handle_id
-       where h.person_id = $1 and not c.is_group
-       order by c.last_message_at desc nulls last`,
-      [id],
-    );
-  }
-  if (tid.startsWith('c')) return q<ConvRow>('select * from conversation where id = $1', [id]);
-  return [];
-}
+import { listThreads, searchMessages, threadConversations, threadMessages, type SearchFilter } from '../queries.js';
 
 export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: WhatsApp) {
   // ---------- live updates ----------
@@ -119,53 +74,9 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
     r.post('/api/whatsapp/logout', async () => wa.logout());
 
     // ---------- inbox ----------
-    r.get<{ Querystring: { limit?: string; offset?: string } }>('/api/threads', async (req) => {
-      const limit = Math.min(Number(req.query.limit ?? 100), 500);
-      const offset = Number(req.query.offset ?? 0);
-      return q(
-        `with threads as (
-           select ct.tid,
-                  min(case when ct.tid like 'p%' then substr(ct.tid, 2)::bigint end) as person_id,
-                  bool_or(c.is_group) as is_group,
-                  max(c.last_message_at) as last_at,
-                  sum(c.unread_count)::int as unread,
-                  array_agg(c.id) as conversation_ids,
-                  array_agg(distinct c.network) as networks,
-                  max(c.title) filter (where c.is_group) as group_title
-           from conversation c join conversation_thread ct on ct.conversation_id = c.id
-           where not c.archived
-           group by ct.tid
-         )
-         select t.tid, t.is_group, t.last_at, t.unread, t.conversation_ids, t.networks,
-                coalesce(t.group_title, pn.name, pa.address, gm.names, 'Unknown') as title,
-                lm.body as last_body, lm.from_me as last_from_me, lm.service as last_service, lm.kind as last_kind,
-                lm.unsent as last_unsent, lm.has_attachment as last_has_attachment, lm.sender_name as last_sender_name
-         from threads t
-         left join person_name pn on pn.person_id = t.person_id
-         left join person_address pa on pa.person_id = t.person_id
-         left join lateral (
-           select string_agg(coalesce(mpn.name, mpa.address, h.address), ', ') as names
-           from (select h.* from conversation_member cm join handle h on h.id = cm.handle_id
-                 where t.is_group and cm.conversation_id = t.conversation_ids[1] limit 5) h
-           left join person_name mpn on mpn.person_id = h.person_id
-           left join person_address mpa on mpa.person_id = h.person_id
-         ) gm on true
-         left join lateral (
-           select m.body, m.from_me, m.service, m.kind, m.unsent,
-                  exists(select 1 from attachment a where a.message_id = m.id) as has_attachment,
-                  coalesce(spn.name, sh.address) as sender_name
-           from message m
-           left join handle sh on sh.id = m.sender_handle_id
-           left join person_name spn on spn.person_id = sh.person_id
-           where m.conversation_id = any(t.conversation_ids)
-           order by m.sent_at desc limit 1
-         ) lm on true
-         where t.last_at is not null
-         order by t.last_at desc
-         limit $1 offset $2`,
-        [limit, offset],
-      );
-    });
+    r.get<{ Querystring: { limit?: string; offset?: string } }>('/api/threads', async (req) =>
+      listThreads({ limit: Number(req.query.limit ?? 100), offset: Number(req.query.offset ?? 0) }),
+    );
 
     r.get<{ Params: { tid: string } }>('/api/threads/:tid', async (req, reply) => {
       const convs = await threadConversations(req.params.tid);
@@ -201,18 +112,17 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
       };
     });
 
-    r.get<{ Params: { tid: string }; Querystring: { before?: string; limit?: string } }>('/api/threads/:tid/messages', async (req, reply) => {
-      const convs = await threadConversations(req.params.tid);
-      if (!convs.length) return reply.code(404).send({ error: 'thread not found' });
-      const limit = Math.min(Number(req.query.limit ?? 60), 200);
-      const rows = await q(
-        `select ${MESSAGE_COLUMNS} from message m ${MESSAGE_JOINS}
-         where m.conversation_id = any($1) and ($2::timestamptz is null or m.sent_at < $2)
-         order by m.sent_at desc limit $3`,
-        [convs.map((c) => c.id), req.query.before ?? null, limit],
-      );
-      return rows.reverse();
-    });
+    r.get<{ Params: { tid: string }; Querystring: { before?: string; after?: string; around?: string; limit?: string } }>(
+      '/api/threads/:tid/messages',
+      async (req, reply) => {
+        const convs = await threadConversations(req.params.tid);
+        if (!convs.length) return reply.code(404).send({ error: 'thread not found' });
+        const { before, after, around, limit } = req.query;
+        return threadMessages(convs.map((c) => c.id), {
+          before, after, around: around ? Number(around) : undefined, limit: limit ? Number(limit) : undefined,
+        });
+      },
+    );
 
     r.post<{ Params: { tid: string } }>('/api/threads/:tid/read', async (req) => {
       const convs = await threadConversations(req.params.tid);
@@ -277,22 +187,12 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
     });
 
     // ---------- search ----------
-    r.get<{ Querystring: { q?: string } }>('/api/search', async (req) => {
-      const words = (req.query.q ?? '').split(/\s+/).map((w) => w.replace(/[^\p{L}\p{N}]/gu, '')).filter(Boolean);
-      if (!words.length) return [];
-      const tsq = words.map((w) => `${w}:*`).join(' & ');
-      return q(
-        `select ${MESSAGE_COLUMNS}, ct.tid,
-                coalesce(c.title, tpn.name, tpa.address) as thread_title
-         from message m ${MESSAGE_JOINS}
-         join conversation c on c.id = m.conversation_id
-         join conversation_thread ct on ct.conversation_id = c.id
-         left join person_name tpn on ct.tid like 'p%' and tpn.person_id = substr(ct.tid, 2)::bigint
-         left join person_address tpa on ct.tid like 'p%' and tpa.person_id = substr(ct.tid, 2)::bigint
-         where m.tsv @@ to_tsquery('simple', $1)
-         order by m.sent_at desc limit 100`,
-        [tsq],
-      );
+    r.get<{ Querystring: { q?: string; tid?: string; service?: string; limit?: string; offset?: string } }>('/api/search', async (req) => {
+      const { q: text = '', tid, service, limit, offset } = req.query;
+      return searchMessages({
+        text, tid: tid || undefined, service: (service || undefined) as SearchFilter['service'],
+        limit: Number(limit ?? 50), offset: Number(offset ?? 0),
+      });
     });
 
     // ---------- attachments ----------

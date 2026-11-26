@@ -1,7 +1,8 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, SERVICE_LABEL, type Message, type Service } from '../api.ts';
-import { dayLabel, initials, sameDay, serviceClass } from '../format.ts';
+import { api, SERVICE_LABEL, type Message, type MessagePage, type Service } from '../api.ts';
+import { dayLabel, initials, listTime, sameDay, serviceClass } from '../format.ts';
+import { Highlight } from './Highlight.tsx';
 import { MessageBubble } from './MessageBubble.tsx';
 import { Composer } from './Composer.tsx';
 
@@ -19,15 +20,29 @@ export interface Pending {
   error?: string;
 }
 
-export function ThreadView({ tid, onBack }: { tid: string; onBack: () => void }) {
+export function ThreadView({ tid, focus, onFocus, onBack }: {
+  tid: string;
+  /** A message to open the conversation at (from search), or null for the latest messages. */
+  focus: number | null;
+  onFocus: (messageId: number | null) => void;
+  onBack: () => void;
+}) {
   const qc = useQueryClient();
   const thread = useQuery({ queryKey: ['thread', tid], queryFn: () => api.thread(tid) });
+  // Pages: older ones are appended (next), newer ones prepended (previous) when opened at a message.
   const messages = useInfiniteQuery({
-    queryKey: ['messages', tid],
+    queryKey: ['messages', tid, focus ?? 'latest'],
     queryFn: ({ pageParam }) => api.messages(tid, pageParam),
-    initialPageParam: undefined as string | undefined,
-    getNextPageParam: (last) => (last.length < PAGE ? undefined : last[0]?.sent_at),
+    initialPageParam: (focus ? { around: focus } : {}) as MessagePage,
+    getNextPageParam: (last, _all, param) =>
+      !last.length || (!param.around && last.length < PAGE) ? undefined : { before: last[0].sent_at },
+    getPreviousPageParam: (first, _all, param) =>
+      !focus || !first.length || (param.after && first.length < PAGE) || (!param.around && !param.after)
+        ? undefined
+        : { after: first[first.length - 1].sent_at },
   });
+  const [findOpen, setFindOpen] = useState(false);
+  const [flash, setFlash] = useState<number | null>(null);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [pending, setPending] = useState<Pending[]>([]);
   const [lightbox, setLightbox] = useState<string | null>(null);
@@ -48,6 +63,22 @@ export function ThreadView({ tid, onBack }: { tid: string; onBack: () => void })
     return () => ro.disconnect();
   }, [thread.data]);
 
+  // Opened at a message: bring it to the middle of the screen and flash it once.
+  const focusLoaded = !!focus && list.some((m) => m.id === focus);
+  useEffect(() => {
+    if (!focus || !focusLoaded) return;
+    const el = scrollRef.current?.querySelector<HTMLElement>(`[data-mid="${focus}"]`);
+    el?.scrollIntoView({ block: 'center' });
+    setFlash(focus);
+    const t = setTimeout(() => setFlash(null), 2200);
+    return () => clearTimeout(t);
+  }, [focus, focusLoaded]);
+
+  // Back to the latest messages: start at the bottom again.
+  useEffect(() => {
+    if (!focus) scrollRef.current?.scrollTo({ top: 0 });
+  }, [focus]);
+
   // Mark read when opened, when new messages arrive, and when the window comes back.
   const newestId = list[list.length - 1]?.id;
   useEffect(() => {
@@ -63,6 +94,7 @@ export function ThreadView({ tid, onBack }: { tid: string; onBack: () => void })
   const send = useCallback(
     async (p: Omit<Pending, 'key' | 'status'>, retryKey?: string) => {
       const key = retryKey ?? `${Date.now()}-${Math.random()}`;
+      if (focus) onFocus(null);
       setPending((cur) =>
         retryKey ? cur.map((x) => (x.key === key ? { ...x, status: 'sending', error: undefined } : x)) : [...cur, { ...p, key, status: 'sending' }],
       );
@@ -77,7 +109,7 @@ export function ThreadView({ tid, onBack }: { tid: string; onBack: () => void })
         setPending((cur) => cur.map((x) => (x.key === key ? { ...x, status: 'failed', error: err instanceof Error ? err.message : 'Not sent' } : x)));
       }
     },
-    [tid, qc],
+    [tid, qc, focus, onFocus],
   );
 
   const t = thread.data;
@@ -118,6 +150,7 @@ export function ThreadView({ tid, onBack }: { tid: string; onBack: () => void })
                 )}
                 <MessageBubble
                   m={m}
+                  highlighted={m.id === flash}
                   isGroup={!!t?.isGroup}
                   firstInRun={newDay || serviceChanged || !grouped(prev, m)}
                   lastInRun={!grouped(m, next) || (!!next && !sameDay(m.sent_at, next.sent_at))}
@@ -128,6 +161,11 @@ export function ThreadView({ tid, onBack }: { tid: string; onBack: () => void })
               </Fragment>
             );
           })}
+          {messages.hasPreviousPage && (
+            <button className="pill-btn newer" onClick={() => messages.fetchPreviousPage()} disabled={messages.isFetchingPreviousPage}>
+              {messages.isFetchingPreviousPage ? 'Loading' : 'Show newer messages'}
+            </button>
+          )}
           {pending.map((p) => (
             <div key={p.key} className={`msg out first last ${serviceClass(p.service)} ${p.status === 'failed' ? 'failed' : 'pending'}`}>
               <div className="msg-row">
@@ -165,10 +203,18 @@ export function ThreadView({ tid, onBack }: { tid: string; onBack: () => void })
             {t?.isGroup && t.members.length > 0 && <span> with {t.members.length} people</span>}
           </p>
         </div>
+        <button className="pill-btn" onClick={() => setFindOpen((o) => !o)} aria-expanded={findOpen}>
+          {findOpen ? 'Done' : 'Search'}
+        </button>
       </header>
 
-      {farFromBottom && (
-        <button className="jump glass" onClick={() => scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}>
+      {findOpen && <FindInThread tid={tid} onPick={(id) => onFocus(id)} onClose={() => setFindOpen(false)} />}
+
+      {(farFromBottom || !!focus) && (
+        <button
+          className="jump glass"
+          onClick={() => (focus ? onFocus(null) : scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' }))}
+        >
           Jump to latest
         </button>
       )}
@@ -182,5 +228,45 @@ export function ThreadView({ tid, onBack }: { tid: string; onBack: () => void })
         </div>
       )}
     </section>
+  );
+}
+
+/** Search inside one conversation; picking a result opens the conversation at that message. */
+function FindInThread({ tid, onPick, onClose }: { tid: string; onPick: (id: number) => void; onClose: () => void }) {
+  const [text, setText] = useState('');
+  const query = useDeferredValue(text.trim());
+  const results = useQuery({
+    queryKey: ['search', query, tid],
+    queryFn: () => api.search(query, { tid, limit: 50 }),
+    enabled: query.length >= 2,
+  });
+  return (
+    <div className="find glass" role="search">
+      <input
+        className="search-field"
+        type="search"
+        autoFocus
+        placeholder="Search this conversation"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => e.key === 'Escape' && onClose()}
+        aria-label="Search this conversation"
+      />
+      {query.length >= 2 && (
+        <div className="find-results">
+          {results.isPending && <p className="list-note">Searching</p>}
+          {results.data && !results.data.length && <p className="list-note">No messages match "{query}".</p>}
+          {results.data?.map((m) => (
+            <button key={m.id} className="search-row" onClick={() => onPick(m.id)}>
+              <span className="thread-top">
+                <span className="thread-title">{m.from_me ? 'You' : (m.sender_name ?? 'Unknown')}</span>
+                <time className="thread-time">{listTime(m.sent_at)}</time>
+              </span>
+              <span className="search-body"><Highlight text={m.snippet ?? m.body ?? ''} /></span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
