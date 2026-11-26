@@ -26,7 +26,7 @@ Rectangle {
     }
     onConversationsChanged: picked = 0
 
-    color: Theme.bg
+    color: Theme.glass ? "transparent" : Theme.bg  // with glass the pane's tint is behind it
     height: col.height + 14
 
     Rectangle { width: parent.width; height: 1; color: Theme.sep }

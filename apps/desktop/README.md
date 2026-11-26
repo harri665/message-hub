@@ -12,6 +12,33 @@ and uses the MacShell look.
 - **Follows MacShell's theme while it runs**: dark/light mode, accent colour, the Open Runde font and the 24-hour
   clock are read from `~/.config/macdock/settings.json` and `~/.config/macbar/settings.json`. The window, traffic lights and
   colours match MacShell's own app windows. Without MacShell it follows the desktop's dark/light setting.
+- **Liquid Glass, optional**: see [Glass](#glass).
+
+## Glass
+
+The gear at the top of the sidebar sets *Window glass* to **Automatic** (the default), **On** or **Off**. The choice
+is saved in `~/.config/message-hub/config.json` (`"glass": "on"` / `"off"`; no key means automatic), and
+`message-hub --glass on|off|auto` sets it from the command line, also for the instance that is already running.
+
+- **Automatic** follows MacShell: glass is on while MacShell uses its Liquid Glass style (`barStyle` is `liquid`, or
+  `compositorGlass` is on, in `~/.config/macbar/settings.json`), and changes with it live.
+- **On**: the window's surfaces become tints over the compositor's glass. The sidebar is the glassiest, the
+  conversation pane is denser so long chats stay easy to read, and bubbles, photos and the composer stay solid. How
+  much shows through follows MacShell's *glassOpacity*, and the window edge becomes a light rim set by *glassRim*.
+- **Off** is the plain opaque window, with no extra work for the app or the compositor.
+
+The glass itself is drawn by the compositor. On Hyprland with the hyprglass plugin (MacShell's setup), window glass is
+opt-in per window: while glass is on, the app tags its own window `hyprglass_enabled` (and `hyprglass_theme_light` or
+`hyprglass_theme_dark` to match) over Hyprland's IPC socket, and takes the tags off when glass is turned off. Which
+glass it gets is up to the Hyprland config; MacShell's uses the frosted Liquid Glass of its assistant panel:
+
+```lua
+-- inside the `if hl.plugin.hyprglass then` block of hyprland.lua
+hl.window_rule({ name = "msgglass", match = { class = "^(message-hub)$" }, tag = "+hyprglass_preset_macshell_liquid_frost" })
+```
+
+Without that rule the window gets hyprglass's default window glass. On other compositors, glass on just makes the
+window translucent (with whatever blur the compositor puts behind translucent windows).
 
 ## MacShell's Dynamic Island
 
@@ -79,11 +106,12 @@ To keep notifications coming after login, start it in the background with your s
 ## Command line
 
 `message-hub` shows the window, `--background` starts without one, `--open <thread id>` opens a chat
-(e.g. `p12` or `c40`), `--quit` stops the running instance.
+(e.g. `p12` or `c40`), `--quit` stops the running instance. `--glass on|off|auto` sets and saves the
+[glass](#glass) option, also in the running instance (add `--background` to change it without showing the window).
 
 For development, with `MESSAGE_HUB_DEV=1` set on the running instance, `message-hub --dev "<command>"` drives it:
-`grab <file.png>`, `send <text>`, `filter <text>`, `older`, `top`, `list`, `close`, `login <server> <password>`,
-`logout`. `QT_QPA_PLATFORM=offscreen` runs it without a window, and `MESSAGE_HUB_SOCKET` and `XDG_CONFIG_HOME` /
+`grab <file.png>`, `send <text>`, `filter <text>`, `older`, `top`, `list`, `close`, `settings` (opens the gear menu),
+`login <server> <password>`, `logout`. `QT_QPA_PLATFORM=offscreen` runs it without a window, and `MESSAGE_HUB_SOCKET` and `XDG_CONFIG_HOME` /
 `XDG_CACHE_HOME` keep a test instance apart from your real one.
 
 ## Layout
@@ -91,8 +119,8 @@ For development, with `MESSAGE_HUB_DEV=1` set on the running instance, `message-
 | Path | What it is |
 |---|---|
 | `src/hub.*` | Hub API client: sign-in, inbox, open chat, sending, search, live socket, attachments, notifications, file picker (XDG portal) |
-| `src/theme.*` | Reads and watches the MacShell settings |
+| `src/theme.*` | Reads and watches the MacShell settings; the glass option and the glass palette |
 | `src/listmodel.*` | List model that applies minimal changes, so lists keep their scroll position and recycle rows |
-| `src/main.cpp` | Single instance, window lifecycle (restart into background mode), attachment image provider |
+| `src/main.cpp` | Single instance, window lifecycle (restart into background mode), compositor glass tags (Hyprland), attachment image provider |
 | `qml/` | The UI |
 | `shaders/roundedimage.frag` | Rounded corners for photos without an offscreen layer |

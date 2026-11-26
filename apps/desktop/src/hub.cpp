@@ -208,6 +208,8 @@ Hub::Hub()
     connect(this, &Hub::signedInChanged, this, &Hub::inboxChanged);
 
     readConfig();
+    // The glass setting is saved with the rest of the config (after reading it, so reading doesn't write it back).
+    connect(Theme::instance(), &Theme::glassModeChanged, this, &Hub::writeConfig);
 
     // Show the last inbox at once; the hub's answer replaces it when it arrives.
     QFile f(cacheFile("threads.json"));
@@ -226,6 +228,7 @@ void Hub::readConfig() {
     const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
     m_server = o.value("server").toString();
     m_token = o.value("session").toString();
+    Theme::instance()->setGlassMode(o.value("glass").toString("auto"));
 }
 
 void Hub::writeConfig() {
@@ -235,6 +238,7 @@ void Hub::writeConfig() {
     f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);  // holds the session token
     QJsonObject o{{"server", m_server}};
     if (!m_token.isEmpty()) o.insert("session", m_token);
+    if (Theme::instance()->glassMode() != "auto") o.insert("glass", Theme::instance()->glassMode());
     f.write(QJsonDocument(o).toJson());
     f.commit();
 }

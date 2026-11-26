@@ -64,6 +64,27 @@ Canvas {
             ctx.moveTo(w * 0.14, h * 0.48); ctx.quadraticCurveTo(w * 0.86, h * 0.4, w * 0.86, h * 0.82);
             ctx.stroke();
             break;
+        case "check":
+            ctx.moveTo(w * 0.12, h * 0.54); ctx.lineTo(w * 0.4, h * 0.82); ctx.lineTo(w * 0.9, h * 0.18);
+            ctx.stroke();
+            break;
+        case "gear": {
+            // a filled cog with eight teeth and a round hole
+            const cx = w / 2, cy = h / 2, ro = w * 0.5, ri = w * 0.37, n = 8;
+            for (let i = 0; i < n * 4; ++i) {
+                const a = (i / (n * 4)) * Math.PI * 2 - Math.PI / 2;
+                const r = (i % 4 === 1 || i % 4 === 2) ? ro : ri;
+                if (i === 0) ctx.moveTo(cx + r * Math.cos(a), cy + r * Math.sin(a));
+                else ctx.lineTo(cx + r * Math.cos(a), cy + r * Math.sin(a));
+            }
+            ctx.closePath();
+            ctx.fill();
+            ctx.globalCompositeOperation = "destination-out";
+            ctx.beginPath();
+            ctx.arc(cx, cy, w * 0.17, 0, Math.PI * 2);
+            ctx.fill();
+            break;
+        }
         }
     }
 }

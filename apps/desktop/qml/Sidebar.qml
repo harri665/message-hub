@@ -5,6 +5,7 @@ import MessageHub
 Rectangle {
     id: side
     required property Window window
+    required property Menu menu
     signal opened()
     color: Theme.bar
 
@@ -26,10 +27,49 @@ Rectangle {
 
     TrafficLights { x: 18; y: 19; window: side.window }
 
+    // Settings: the window glass option (saved in the app's config).
+    Item {
+        id: gear
+        anchors.right: parent.right
+        anchors.rightMargin: 8
+        y: 12
+        width: 26
+        height: 26
+        Rectangle {
+            anchors.fill: parent
+            radius: 6
+            color: gearMa.containsMouse ? Theme.ctrl : "transparent"
+        }
+        Glyph {
+            anchors.centerIn: parent
+            name: "gear"
+            width: 15
+            height: 15
+            stroke: 1.4
+            color: gearMa.containsMouse ? Theme.text : Theme.text2
+        }
+        MouseArea {
+            id: gearMa
+            anchors.fill: parent
+            hoverEnabled: true
+            onClicked: side.openSettings()
+        }
+    }
+    function openSettings() {
+        const p = gear.mapToItem(side.menu, 0, gear.height + 4);
+        const set = mode => () => { Theme.glassMode = mode; };
+        side.menu.open(p.x, p.y, [
+            { label: "Window glass", header: true },
+            { label: "Automatic", detail: Theme.shellGlass ? "MacShell: on" : "MacShell: off", checked: Theme.glassMode === "auto", action: set("auto") },
+            { label: "On", checked: Theme.glassMode === "on", action: set("on") },
+            { label: "Off", checked: Theme.glassMode === "off", action: set("off") }
+        ]);
+    }
+
     // Connection state: a quiet dot, as in MacShell's menus.
     Row {
-        anchors.right: parent.right
-        anchors.rightMargin: 14
+        anchors.right: gear.left
+        anchors.rightMargin: 6
         y: 18
         spacing: 6
         visible: !Hub.online

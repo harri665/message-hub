@@ -306,7 +306,7 @@ Item {
                         radius: 12
                         color: modelData.fromMe ? Theme.accent : (Theme.dark ? "#48484A" : "#DCDCE0")
                         border.width: 2
-                        border.color: Theme.bg
+                        border.color: Theme.base
                         Text { anchors.centerIn: parent; text: parent.modelData.emoji; font.pixelSize: 12 }
                     }
                 }

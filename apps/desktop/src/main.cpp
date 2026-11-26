@@ -41,6 +41,51 @@ App::App() {
     connect(Hub::instance(), &Hub::sendResult, this, [this](const QString &tid, bool ok, const QString &error) {
         toIslands({{"type", "sent"}, {"tid", tid}, {"ok", ok}, {"error", error}});
     });
+    connect(Theme::instance(), &Theme::changed, this, [this] { syncGlass(); });
+}
+
+QQuickWindow *App::window() const {
+    return m_engine ? qobject_cast<QQuickWindow *>(m_engine->rootObjects().value(0)) : nullptr;
+}
+
+// ---------- compositor glass (Hyprland + hyprglass) ----------
+// MacShell's Hyprland config draws window glass (the hyprglass plugin) only behind windows tagged hyprglass_enabled.
+// While glass is on the app tags its own window that way, with the light or dark glass to match, and takes the tags off
+// again when glass is turned off. With glass off from the start nothing is sent, so the window is exactly as before.
+namespace {
+void hyprlandRequest(const QByteArray &lua, const QByteArray &classic) {
+    const QString sig = qEnvironmentVariable("HYPRLAND_INSTANCE_SIGNATURE");
+    const QString runtime = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+    if (sig.isEmpty() || runtime.isEmpty()) return;
+    auto *s = new QLocalSocket(qApp);
+    const bool isLua = !lua.isEmpty();
+    QObject::connect(s, &QLocalSocket::connected, s, [s, lua, classic] { s->write(lua.isEmpty() ? classic : lua); });
+    QObject::connect(s, &QLocalSocket::readyRead, s, [s, isLua, classic] {
+        // A Lua config (Hyprland 0.55+) answers "ok" to each dispatch; an older hyprland.conf setup rejects the Lua form.
+        if (isLua && !s->readAll().contains("ok")) hyprlandRequest({}, classic);
+        s->disconnectFromServer();
+    });
+    QObject::connect(s, &QLocalSocket::disconnected, s, &QObject::deleteLater);
+    QObject::connect(s, &QLocalSocket::errorOccurred, s, &QObject::deleteLater);
+    s->connectToServer(runtime + "/hypr/" + sig + "/.socket.sock");
+}
+}  // namespace
+
+void App::syncGlass(bool again) {
+    if (!window() || !qEnvironmentVariableIsSet("HYPRLAND_INSTANCE_SIGNATURE")) return;
+    const int tags = !Theme::instance()->glass() ? 0 : Theme::instance()->dark() ? 1 : 2;
+    if (again ? tags == 0 : tags == m_glassTags) return;
+    m_glassTags = tags;
+    const QByteArray pid = QByteArray::number(QCoreApplication::applicationPid());
+    const QList<QByteArray> set = tags == 0 ? QList<QByteArray>{"-hyprglass_enabled", "-hyprglass_theme_dark", "-hyprglass_theme_light"}
+                                : tags == 1 ? QList<QByteArray>{"+hyprglass_enabled", "-hyprglass_theme_light", "+hyprglass_theme_dark"}
+                                            : QList<QByteArray>{"+hyprglass_enabled", "-hyprglass_theme_dark", "+hyprglass_theme_light"};
+    QByteArray lua = "[[BATCH]]", classic = "[[BATCH]]";
+    for (const QByteArray &t : set) {
+        lua += "dispatch hl.dsp.window.tag({ tag = \"" + t + "\", window = \"pid:" + pid + "\" });";
+        classic += "dispatch tagwindow " + t + " pid:" + pid + ";";
+    }
+    hyprlandRequest(lua, classic);
 }
 
 // ---------- MacShell's Dynamic Island ----------
@@ -70,6 +115,7 @@ void App::toIslands(const QJsonObject &message) {
 void App::handleLine(QLocalSocket *from, const QString &line) {
     if (line == "quit") quit();
     else if (line == "island") addIslandClient(from);
+    else if (line.startsWith("glass ")) Theme::instance()->setGlassMode(line.mid(6).trimmed());
     else if (line.startsWith("show")) showWindow(line.mid(5).trimmed());
     else if (line.startsWith("dev ") && qEnvironmentVariableIsSet("MESSAGE_HUB_DEV")) dev(line.mid(4));
     else if (line.startsWith('{')) {
@@ -107,6 +153,14 @@ void App::showWindow(const QString &tid) {
     QObject::connect(m_engine, &QQmlApplicationEngine::objectCreationFailed, qApp, [] { QCoreApplication::exit(1); },
                      Qt::QueuedConnection);
     m_engine->loadFromModule("MessageHub", "Main");
+    m_glassTags = 0;
+    // The compositor knows the window once its first frame is up. The tags go out then, and once more a moment later
+    // in case the compositor handled them before it had mapped the window (adding a tag twice changes nothing).
+    if (QQuickWindow *w = window())
+        connect(w, &QQuickWindow::frameSwapped, this, [this] {
+            syncGlass();
+            QTimer::singleShot(300, this, [this] { syncGlass(true); });
+        }, Qt::ConnectionType(Qt::QueuedConnection | Qt::SingleShotConnection));
 }
 
 void App::closeWindow() {
@@ -160,6 +214,9 @@ void App::dev(const QString &cmd) {
             qWarning("list: contentY=%.0f originY=%.0f contentHeight=%.0f height=%.0f count=%d atYEnd=%d", l->property("contentY").toDouble(),
                      l->property("originY").toDouble(), l->property("contentHeight").toDouble(), l->property("height").toDouble(),
                      l->property("count").toInt(), l->property("atYEnd").toBool());
+    }
+    else if (verb == "settings" && w) {
+        if (auto *s = w->findChild<QObject *>("sidebar")) QMetaObject::invokeMethod(s, "openSettings");
     }
     else if (verb == "resize" && w) w->resize(arg.section('x', 0, 0).toInt(), arg.section('x', 1).toInt());
 }
@@ -239,6 +296,13 @@ int main(int argc, char *argv[]) {
     if (args.contains("--quit")) command = "quit";
     if (int i = int(args.indexOf("--open")); i >= 0 && i + 1 < args.size()) command = "show " + args.at(i + 1);
     if (int i = int(args.indexOf("--dev")); i >= 0 && i + 1 < args.size()) command = "dev " + args.at(i + 1);
+    // --glass on|off|auto: sets (and saves) the window glass option, here or in the running instance.
+    QString glass;
+    if (int i = int(args.indexOf("--glass")); i >= 0 && i + 1 < args.size()) glass = args.at(i + 1);
+    if (!glass.isEmpty() && glass != "on" && glass != "off" && glass != "auto") {
+        qWarning("message-hub: --glass takes on, off or auto");
+        return 2;
+    }
 
     // One instance: a second launch (Dock, Spotlight, notification) just tells the running one what to do.
     const QString runtime = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
@@ -247,6 +311,7 @@ int main(int argc, char *argv[]) {
         QLocalSocket probe;
         probe.connectToServer(socketPath);
         if (probe.waitForConnected(300)) {
+            if (!glass.isEmpty()) probe.write("glass " + glass.toUtf8() + '\n');
             probe.write(command.toUtf8() + '\n');
             probe.waitForBytesWritten(300);
             return 0;
@@ -275,6 +340,7 @@ int main(int argc, char *argv[]) {
     QObject::connect(Theme::instance(), &Theme::changed, &app, applyFont);
 
     Hub::instance();
+    if (!glass.isEmpty()) Theme::instance()->setGlassMode(glass);
     QObject::connect(Hub::instance(), &Hub::showRequested, &app, [](const QString &tid) { App::instance()->showWindow(tid); });
 
     if (command.startsWith("show")) App::instance()->showWindow(command.mid(5).trimmed());

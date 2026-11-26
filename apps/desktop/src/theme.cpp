@@ -89,11 +89,29 @@ void Theme::load() {
 
     const bool use24h = bar.contains("use24h") ? bar.value("use24h").toBool() : m_use24h;
 
-    if (dark == m_dark && accent == m_accent && family == m_font && bold == m_boldFont && use24h == m_use24h) return;
+    // MacShell's Liquid Glass style (its own popovers, or drawn by the compositor) and its glass tuning.
+    const bool shellGlass = pick("barStyle").toString() == "liquid" || pick("compositorGlass").toBool();
+    const float opacity = float(qBound(0.0, pick("glassOpacity").toDouble(0.42), 1.0));
+    const float rim = float(qBound(0.0, pick("glassRim").toDouble(0.45), 1.0));
+
+    if (dark == m_dark && accent == m_accent && family == m_font && bold == m_boldFont && use24h == m_use24h &&
+        shellGlass == m_shellGlass && opacity == m_glassOpacity && rim == m_glassRim)
+        return;
     m_dark = dark;
     m_accent = accent;
     m_font = family;
     m_boldFont = bold;
     m_use24h = use24h;
+    m_shellGlass = shellGlass;
+    m_glassOpacity = opacity;
+    m_glassRim = rim;
+    emit changed();
+}
+
+void Theme::setGlassMode(const QString &mode) {
+    const QString m = mode == "on" || mode == "off" ? mode : QStringLiteral("auto");
+    if (m == m_glassMode) return;
+    m_glassMode = m;
+    emit glassModeChanged();
     emit changed();
 }

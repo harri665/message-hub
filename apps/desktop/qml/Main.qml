@@ -32,14 +32,17 @@ Window {
         id: frame
         anchors.fill: parent
         radius: 12
-        color: Theme.bg
+        // With glass the sidebar and the conversation pane tint the compositor's glass each in their own strength.
+        color: Theme.glass ? "transparent" : Theme.bg
         border.width: 1
-        border.color: Theme.border
+        border.color: Theme.rim
         clip: true
 
         Sidebar {
             id: sidebar
+            objectName: "sidebar"
             window: win
+            menu: popup
             width: Math.round(Math.min(340, Math.max(260, win.width * 0.3)))
             height: parent.height
             visible: Hub.signedIn

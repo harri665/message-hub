@@ -28,12 +28,19 @@ Item {
     }
     Component.onCompleted: Qt.callLater(view.showNewest)
 
+    // With glass, one tint behind the whole pane (header, messages and composer are clear over it).
+    Rectangle {
+        anchors.fill: parent
+        visible: Theme.glass
+        color: Theme.bg
+    }
+
     // ---- header ----
     Rectangle {
         id: bar
         width: parent.width
         height: 52
-        color: Theme.bg
+        color: Theme.glass ? "transparent" : Theme.bg
         z: 2
         DragHandler { target: null; onActiveChanged: if (active) view.window.startSystemMove() }
         TapHandler { onDoubleTapped: view.window.visibility === Window.Maximized ? view.window.showNormal() : view.window.showMaximized() }
