@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build hub image (web + API)
+        run: docker build . --file apps/hub/Dockerfile --tag message-hub-hub:ci
+
+      - name: Build WhatsApp connector image
+        run: docker build ./services/wa-connector --tag message-hub-wa:ci
+
+      - name: Trigger Portainer stack webhook
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          WEBHOOK: ${{ secrets.PORTAINER_WEBHOOK_URL }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "PORTAINER_WEBHOOK_URL secret not set; skipping deploy"
+            exit 0
+          fi
+          curl --fail --show-error --silent -X POST "$WEBHOOK"

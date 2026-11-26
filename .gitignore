@@ -10,3 +10,7 @@ attachments/
 *.db
 *.sqlite
 .DS_Store
+
+# Go build output
+services/wa-connector/wa-connector
+services/wa-connector/*.exe

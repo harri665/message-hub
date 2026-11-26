@@ -1,0 +1,56 @@
+# Message Hub stack. Deployed on TrueNAS as a Portainer git stack; set the variables from
+# .env.example in the stack's environment settings (never commit real values).
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: messagehub
+      POSTGRES_USER: messagehub
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U messagehub -d messagehub"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  wa:
+    build: ./services/wa-connector
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://messagehub:${DB_PASSWORD}@db:5432/messagehub?sslmode=disable
+      INTERNAL_SECRET: ${INTERNAL_SECRET:?set INTERNAL_SECRET}
+      DEVICE_NAME: ${WA_DEVICE_NAME:-Message Hub}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  hub:
+    build:
+      context: .
+      dockerfile: apps/hub/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${HUB_PORT:-8095}:8080"
+    environment:
+      DATABASE_URL: postgres://messagehub:${DB_PASSWORD}@db:5432/messagehub
+      APP_PASSWORD: ${APP_PASSWORD:?set APP_PASSWORD}
+      SECURE_COOKIES: ${SECURE_COOKIES:-false}
+      DEFAULT_COUNTRY_CODE: ${DEFAULT_COUNTRY_CODE:-1}
+      BLUEBUBBLES_URL: ${BLUEBUBBLES_URL:-}
+      BLUEBUBBLES_PASSWORD: ${BLUEBUBBLES_PASSWORD:-}
+      WA_CONNECTOR_URL: http://wa:8090
+      INTERNAL_SECRET: ${INTERNAL_SECRET}
+    volumes:
+      - attachments:/data/attachments
+    depends_on:
+      db:
+        condition: service_healthy
+      wa:
+        condition: service_started
+
+volumes:
+  db:
+  attachments:
