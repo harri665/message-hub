@@ -1,0 +1,178 @@
+name: Desktop app
+
+# Builds the Linux and Windows desktop apps from the same commit, packages them with Velopack (Linux AppImage, Windows
+# installer) and screenshots each packaged app as a smoke test. A tag desktop-vX.Y.Z publishes both as one GitHub
+# release, which the installed apps update themselves from. The release only happens when both builds pass.
+
+on:
+  push:
+    tags: ['desktop-v*']
+    branches: [main]
+    paths: ['apps/desktop/**', 'apps/web/public/icons/**', '.github/workflows/desktop.yml']
+  pull_request:
+    paths: ['apps/desktop/**', 'apps/web/public/icons/**', '.github/workflows/desktop.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  QT_VERSION: 6.8.3
+  VELOPACK_VERSION: 1.2.161
+  PACK_ID: MessageHub
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04  # oldest glibc we support; the AppImage runs on anything newer
+            channel: linux
+          - os: windows-2022
+            channel: win
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: v
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then v="${GITHUB_REF#refs/tags/desktop-v}"; else v="0.0.0-ci.${GITHUB_RUN_NUMBER}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Building $v"
+
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libegl1 libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 \
+            libfontconfig1 libdbus-1-3 libwayland-client0 libwayland-cursor0 libwayland-egl1 libfuse2 patchelf ninja-build
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          modules: qtwebsockets qtshadertools
+          cache: true
+
+      - name: Tools (Ninja, Velopack library and vpk)
+        run: |
+          [ "$RUNNER_OS" = Windows ] && choco install ninja --no-progress -y
+          curl -sSfL -o vp.zip "https://github.com/velopack/velopack/releases/download/$VELOPACK_VERSION/velopack_libc_$VELOPACK_VERSION.zip"
+          mkdir -p velopack && (cd velopack && unzip -q ../vp.zip)
+          dotnet tool install -g vpk --version "$VELOPACK_VERSION"
+          tools="$HOME/.dotnet/tools"; [ "$RUNNER_OS" = Windows ] && tools="$(cygpath -w "$tools")"
+          echo "$tools" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: |
+          VP="$PWD/velopack"
+          [ "$RUNNER_OS" = Windows ] && VP="$(cygpath -m "$VP")"
+          cmake -S apps/desktop -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DMESSAGE_HUB_UPDATER=ON -DVELOPACK_DIR="$VP" -DMESSAGE_HUB_VERSION="${{ steps.v.outputs.version }}"
+          cmake --build build
+
+      # Linux: collect Qt (libraries, plugins, QML) with linuxdeploy, then flatten it into one folder next to the
+      # binary, which Velopack turns into the AppImage.
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          echo "Qt platform plugins available:"; ls "$QT_ROOT_DIR/plugins/platforms"
+          curl -sSfL -o linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -sSfL -o linuxdeploy-plugin-qt https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+          cp apps/web/public/icons/icon-512.png message-hub.png
+          printf '[Desktop Entry]\nType=Application\nName=Messages\nExec=message-hub\nIcon=message-hub\nCategories=Network;InstantMessaging;\n' > message-hub.desktop
+          export QML_SOURCES_PATHS="$PWD/apps/desktop/qml" QMAKE="$QT_ROOT_DIR/bin/qmake"
+          wl=""; for p in libqwayland-generic.so libqwayland-egl.so libqwayland.so; do
+            [ -e "$QT_ROOT_DIR/plugins/platforms/$p" ] && wl="${wl:+$wl;}$p"; done
+          export EXTRA_PLATFORM_PLUGINS="$wl"
+          ./linuxdeploy --appimage-extract-and-run --appdir AppDir -e build/message-hub \
+            -d message-hub.desktop -i message-hub.png --plugin qt
+          mkdir pack
+          cp -a AppDir/usr/lib AppDir/usr/plugins pack/
+          [ -d AppDir/usr/qml ] && cp -a AppDir/usr/qml pack/
+          cp AppDir/usr/bin/message-hub pack/
+          patchelf --set-rpath '$ORIGIN/lib' pack/message-hub
+          printf '[Paths]\nPrefix = .\nPlugins = plugins\nQml2Imports = qml\n' > pack/qt.conf
+          echo "Packaged platform plugins:"; ls pack/plugins/platforms
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir pack
+          cp build/message-hub.exe build/velopack_libc_win_x64_msvc.dll pack/
+          "$QT_ROOT_DIR/bin/windeployqt.exe" --release --qmldir apps/desktop/qml --no-translations \
+            --no-system-d3d-compiler --no-opengl-sw pack/message-hub.exe
+
+      # Start the packaged app with no window system and no account, and screenshot its sign-in screen through its
+      # development commands. Catches missing libraries, plugins or QML, and shows both apps side by side.
+      - name: Smoke test
+        run: |
+          exe=pack/message-hub; [ "$RUNNER_OS" = Windows ] && exe=pack/message-hub.exe
+          mkdir -p shots t/config t/cache t/plugins/platforms
+          # The package only carries the real platform plugins; borrow Qt's offscreen one for the test.
+          cp "$QT_ROOT_DIR"/plugins/platforms/*qoffscreen* t/plugins/platforms/
+          export QT_PLUGIN_PATH="$PWD/t/plugins"; [ "$RUNNER_OS" = Windows ] && export QT_PLUGIN_PATH="$(cygpath -m "$QT_PLUGIN_PATH")"
+          export QT_QPA_PLATFORM=offscreen MESSAGE_HUB_DEV=1 MESSAGE_HUB_NO_RESTART=1
+          export XDG_CONFIG_HOME="$PWD/t/config" XDG_CACHE_HOME="$PWD/t/cache" MESSAGE_HUB_SOCKET="mh-ci-${{ matrix.channel }}"
+          [ "$RUNNER_OS" = Linux ] && export MESSAGE_HUB_SOCKET="$PWD/t/sock"
+          "$exe" > t/log.txt 2>&1 &
+          sleep 8
+          "$exe" --dev "resize 1000x700"; sleep 1
+          shot="$PWD/shots/${{ matrix.channel }}-signin.png"
+          [ "$RUNNER_OS" = Windows ] && shot="$(cygpath -m "$shot")"
+          "$exe" --dev "grab $shot"; sleep 3
+          "$exe" --quit; sleep 2
+          cat t/log.txt
+          test -s "shots/${{ matrix.channel }}-signin.png" || { echo "The app did not start or render"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-${{ matrix.channel }}
+          path: shots/
+
+      - name: Velopack package
+        run: |
+          icon=apps/web/public/icons/icon-512.png; exe=message-hub; extra=()
+          if [ "$RUNNER_OS" = Windows ]; then
+            icon=apps/desktop/packaging/message-hub.ico; exe=message-hub.exe
+            extra=(--framework vcredist143-x64)  # installs the Visual C++ runtime if it is missing
+          fi
+          vpk pack --packId "$PACK_ID" --packVersion "${{ steps.v.outputs.version }}" --packTitle Messages \
+            --packAuthors "Message Hub" --packDir pack --mainExe "$exe" --icon "$icon" \
+            --channel "${{ matrix.channel }}" --outputDir releases "${extra[@]}"
+          ls -la releases
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: releases-${{ matrix.channel }}
+          path: releases/
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: releases-*
+      - name: Publish both apps to one GitHub release
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          dotnet tool install -g vpk --version "$VELOPACK_VERSION"
+          v="${GITHUB_REF_NAME#desktop-v}"
+          for ch in linux win; do
+            vpk upload github --repoUrl "https://github.com/$GITHUB_REPOSITORY" --token "$TOKEN" \
+              --outputDir "releases-$ch" --channel "$ch" --tag "$GITHUB_REF_NAME" --releaseName "Messages $v" \
+              --publish --merge
+          done

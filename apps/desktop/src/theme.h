@@ -28,6 +28,7 @@ class Theme : public QObject {
     Q_PROPERTY(QString glassMode READ glassMode WRITE setGlassMode NOTIFY glassModeChanged)
     Q_PROPERTY(bool glass READ glass NOTIFY changed)
     Q_PROPERTY(bool shellGlass READ shellGlass NOTIFY changed)
+    Q_PROPERTY(bool hasShell READ hasShell NOTIFY changed)  // MacShell's settings were found
     Q_PROPERTY(QColor base READ base NOTIFY changed)
     Q_PROPERTY(QColor bg READ bg NOTIFY changed)
     Q_PROPERTY(QColor bar READ bar NOTIFY changed)
@@ -60,6 +61,7 @@ public:
     void setGlassMode(const QString &mode);
     bool glass() const { return m_glassMode == "on" || (m_glassMode == "auto" && m_shellGlass); }
     bool shellGlass() const { return m_shellGlass; }
+    bool hasShell() const { return m_hasShell; }
 
     // base: the window's opaque colour. bg (conversation pane) and bar (sidebar) are tints of it while glass is on.
     QColor base() const { return m_dark ? QColor("#1C1C1E") : QColor("#F2F2F7"); }
@@ -117,6 +119,7 @@ private:
     QString m_boldFont;
     QString m_glassMode = QStringLiteral("auto");
     bool m_shellGlass = false;  // MacShell uses its Liquid Glass style
+    bool m_hasShell = false;
     float m_glassOpacity = 0.42f;
     float m_glassRim = 0.45f;
 };

@@ -1,10 +1,6 @@
 #include "hub.h"
 
 #include <QClipboard>
-#include <QDBusConnection>
-#include <QDBusMessage>
-#include <QDBusPendingCallWatcher>
-#include <QDBusPendingReply>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
@@ -19,7 +15,6 @@
 #include <QMimeDatabase>
 #include <QNetworkCookie>
 #include <QNetworkReply>
-#include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
@@ -27,6 +22,7 @@
 #include <QStyleHints>
 #include <QUrlQuery>
 
+#include "platform.h"
 #include "theme.h"
 
 namespace {
@@ -198,11 +194,7 @@ Hub::Hub()
     });
     connect(&m_ws, &QWebSocket::textMessageReceived, this, &Hub::onLive);
 
-    auto bus = QDBusConnection::sessionBus();
-    bus.connect("org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications",
-                "ActionInvoked", this, SLOT(onNotificationAction(uint, QString)));
-    bus.connect("org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications",
-                "NotificationClosed", this, SLOT(onNotificationClosed(uint, uint)));
+    connect(Platform::instance(), &Platform::activated, this, &Hub::showRequested);  // a notification was clicked
 
     connect(this, &Hub::onlineChanged, this, &Hub::inboxChanged);
     connect(this, &Hub::signedInChanged, this, &Hub::inboxChanged);
@@ -731,13 +723,7 @@ void Hub::setWindowActive(bool a) {
     emit windowActiveChanged();
     if (a && !m_tid.isEmpty()) {
         markRead(m_tid);
-        // Clear this chat's notification once it is on screen.
-        if (uint id = m_notificationByTid.value(m_tid)) {
-            auto msg = QDBusMessage::createMethodCall("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
-                                                      "org.freedesktop.Notifications", "CloseNotification");
-            msg << id;
-            QDBusConnection::sessionBus().asyncCall(msg);
-        }
+        Platform::instance()->withdraw(m_tid);  // clear this chat's notification once it is on screen
     }
 }
 
@@ -905,37 +891,13 @@ void Hub::sendFiles(const QList<QUrl> &files, int conversationId) {
     applyMessages();
 }
 
-// The desktop's file picker through the XDG portal (no Qt Widgets needed, so nothing extra is loaded).
+// The system's file picker. The files go to the chat that was open when it was asked for, if it still is.
 void Hub::pickFile(int conversationId) {
-    auto bus = QDBusConnection::sessionBus();
-    const QString token = "mh" + QString::number(QRandomGenerator::global()->generate());
-    QString sender = bus.baseService().mid(1);
-    sender.replace('.', '_');
-    const QString handlePath = "/org/freedesktop/portal/desktop/request/" + sender + '/' + token;
-    m_pickConversation = conversationId;
-    m_pickTid = m_tid;
-    if (!m_pickHandle.isEmpty())
-        bus.disconnect("org.freedesktop.portal.Desktop", m_pickHandle, "org.freedesktop.portal.Request", "Response", this,
-                       SLOT(onPortalResponse(uint, QVariantMap)));
-    m_pickHandle = handlePath;
-    bus.connect("org.freedesktop.portal.Desktop", handlePath, "org.freedesktop.portal.Request", "Response", this,
-                SLOT(onPortalResponse(uint, QVariantMap)));
-    auto msg = QDBusMessage::createMethodCall("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
-                                              "org.freedesktop.portal.FileChooser", "OpenFile");
-    msg << QString() << QStringLiteral("Send a File")
-        << QVariantMap{{"handle_token", token}, {"multiple", true}, {"modal", true}};
-    auto *w = new QDBusPendingCallWatcher(bus.asyncCall(msg), this);
-    connect(w, &QDBusPendingCallWatcher::finished, this, [this, w] {
-        w->deleteLater();
-        if (w->isError()) setError(QStringLiteral("No file picker is available. Drag files into the window instead."));
-    });
-}
-
-void Hub::onPortalResponse(uint response, const QVariantMap &results) {
-    if (response != 0 || m_pickTid != m_tid) return;
-    QList<QUrl> urls;
-    for (const QString &u : results.value("uris").toStringList()) urls << QUrl(u);
-    sendFiles(urls, m_pickConversation);
+    const QString tid = m_tid;
+    Platform::instance()->pickFiles(
+        QStringLiteral("Send a File"),
+        [this, tid, conversationId](const QList<QUrl> &urls) { if (tid == m_tid) sendFiles(urls, conversationId); },
+        [this](const QString &error) { setError(error); });
 }
 
 // ---------- attachments ----------
@@ -1095,28 +1057,5 @@ void Hub::notify(const QVariantMap &p) {
     QString body = oneLine(p.value("body").toString(), 300);
     if (body.isEmpty() && p.value("has_attachment").toBool()) body = QStringLiteral("Sent an attachment");
 
-    auto msg = QDBusMessage::createMethodCall("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
-                                              "org.freedesktop.Notifications", "Notify");
-    msg << QStringLiteral("Messages") << m_notificationByTid.value(tid, 0u) << QStringLiteral("message-hub") << title
-        << body.toHtmlEscaped() << QStringList{"default", "Open"}
-        << QVariantMap{{"desktop-entry", "message-hub"}, {"category", "im.received"}} << -1;
-    auto *w = new QDBusPendingCallWatcher(QDBusConnection::sessionBus().asyncCall(msg), this);
-    connect(w, &QDBusPendingCallWatcher::finished, this, [this, w, tid] {
-        w->deleteLater();
-        QDBusPendingReply<uint> r = *w;
-        if (r.isError()) return;
-        m_notifications.insert(r.value(), tid);
-        m_notificationByTid.insert(tid, r.value());
-    });
-}
-
-void Hub::onNotificationAction(uint id, const QString &) {
-    const QString tid = m_notifications.value(id);
-    if (tid.isEmpty()) return;
-    emit showRequested(tid);
-}
-
-void Hub::onNotificationClosed(uint id, uint) {
-    const QString tid = m_notifications.take(id);
-    if (!tid.isEmpty() && m_notificationByTid.value(tid) == id) m_notificationByTid.remove(tid);
+    Platform::instance()->notify(tid, title, body);
 }

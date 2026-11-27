@@ -110,11 +110,6 @@ signals:
     void incoming(const QVariantMap &message);  // a new message from someone else
     void sendResult(const QString &tid, bool ok, const QString &error);
 
-private slots:
-    void onNotificationAction(uint id, const QString &action);
-    void onNotificationClosed(uint id, uint reason);
-    void onPortalResponse(uint response, const QVariantMap &results);
-
 private:
     Hub();
     using JsonCb = std::function<void(const QJsonDocument &)>;
@@ -182,11 +177,5 @@ private:
     bool m_loadingOlder = false;
     int m_generation = 0;  // bumps when the open thread changes, so late replies are dropped
 
-    int m_pickConversation = 0;
-    QString m_pickTid;
-    QString m_pickHandle;
-
     QHash<QString, QList<std::function<void(QString, QString)>>> m_fetching;
-    QHash<uint, QString> m_notifications;  // notification id -> tid
-    QHash<QString, uint> m_notificationByTid;
 };

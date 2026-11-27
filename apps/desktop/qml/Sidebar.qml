@@ -27,7 +27,7 @@ Rectangle {
 
     TrafficLights { x: 18; y: 19; window: side.window }
 
-    // Settings: the window glass option (saved in the app's config).
+    // Settings: the window glass option (saved in the app's config), the version and updates.
     Item {
         id: gear
         anchors.right: parent.right
@@ -48,6 +48,16 @@ Rectangle {
             stroke: 1.4
             color: gearMa.containsMouse ? Theme.text : Theme.text2
         }
+        // An update is downloaded and waiting: a dot on the gear, as on MacShell's settings.
+        Rectangle {
+            x: parent.width - 8
+            y: 2
+            width: 7
+            height: 7
+            radius: 3.5
+            color: Theme.accent
+            visible: Updater.state === "ready"
+        }
         MouseArea {
             id: gearMa
             anchors.fill: parent
@@ -58,12 +68,23 @@ Rectangle {
     function openSettings() {
         const p = gear.mapToItem(side.menu, 0, gear.height + 4);
         const set = mode => () => { Theme.glassMode = mode; };
-        side.menu.open(p.x, p.y, [
+        const items = [
             { label: "Window glass", header: true },
-            { label: "Automatic", detail: Theme.shellGlass ? "MacShell: on" : "MacShell: off", checked: Theme.glassMode === "auto", action: set("auto") },
+            { label: "Automatic", detail: !Theme.hasShell ? "Off" : Theme.shellGlass ? "MacShell: on" : "MacShell: off", checked: Theme.glassMode === "auto", action: set("auto") },
             { label: "On", checked: Theme.glassMode === "on", action: set("on") },
-            { label: "Off", checked: Theme.glassMode === "off", action: set("off") }
-        ]);
+            { label: "Off", checked: Theme.glassMode === "off", action: set("off") },
+            { label: "Messages " + Updater.version, header: true }
+        ];
+        if (Updater.enabled) items.push(side.updateItem());
+        side.menu.open(p.x, p.y, items);
+    }
+    function updateItem() {
+        switch (Updater.state) {
+        case "ready": return { label: "Restart to Update", detail: Updater.available, action: () => Updater.restartNow() };
+        case "downloading": return { label: "Downloading Update…", detail: Updater.progress + "%", action: () => {} };
+        case "checking": return { label: "Checking for Updates…", action: () => {} };
+        default: return { label: "Check for Updates", detail: Updater.state === "current" ? "Up to date" : Updater.state === "error" ? "Couldn't check" : "", action: () => Updater.check() };
+        }
     }
 
     // Connection state: a quiet dot, as in MacShell's menus.

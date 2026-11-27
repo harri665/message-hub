@@ -22,13 +22,16 @@ QJsonObject readJson(const QString &path) {
 }
 
 // MacShell ships Open Runde inside its config folder and loads it itself; load the same files so the app matches.
-void loadMacShellFonts() {
+// Without MacShell (Windows, or Linux without it) the copy built into the app is used, so it looks the same everywhere.
+void loadOpenRunde() {
     static bool done = false;
     if (done) return;
     done = true;
     const QString dir = home("/.config/quickshell/MacShell/assets/fonts/");
-    for (const char *f : {"OpenRunde-Regular.otf", "OpenRunde-Semibold.otf"})
-        if (QFileInfo::exists(dir + f)) QFontDatabase::addApplicationFont(dir + f);
+    for (const char *f : {"OpenRunde-Regular.otf", "OpenRunde-Semibold.otf"}) {
+        const QString shell = dir + f;
+        QFontDatabase::addApplicationFont(QFileInfo::exists(shell) ? shell : QStringLiteral(":/fonts/") + f);
+    }
 }
 }  // namespace
 
@@ -49,6 +52,8 @@ Theme::Theme() {
     // MacShell rewrites its settings by replacing the file, which drops it from the watcher: watch the folders too.
     connect(&m_watcher, &QFileSystemWatcher::fileChanged, &m_debounce, qOverload<>(&QTimer::start));
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, &m_debounce, qOverload<>(&QTimer::start));
+    // Without MacShell the app follows the system's dark/light setting, live.
+    connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, &m_debounce, qOverload<>(&QTimer::start));
     load();
     watch();
 }
@@ -81,7 +86,7 @@ void Theme::load() {
 
     QString family = pick("fontFamily").toString();
     if (family.isEmpty()) family = "Open Runde";
-    if (family == "Open Runde") loadMacShellFonts();
+    if (family == "Open Runde") loadOpenRunde();
     const QStringList families = QFontDatabase::families();
     if (!families.contains(family)) family = QGuiApplication::font().family();
     // Open Runde comes as two faces: bold text uses the Semibold face rather than a synthetic bold (as MacShell does).
@@ -95,8 +100,9 @@ void Theme::load() {
     const float rim = float(qBound(0.0, pick("glassRim").toDouble(0.45), 1.0));
 
     if (dark == m_dark && accent == m_accent && family == m_font && bold == m_boldFont && use24h == m_use24h &&
-        shellGlass == m_shellGlass && opacity == m_glassOpacity && rim == m_glassRim)
+        shellGlass == m_shellGlass && opacity == m_glassOpacity && rim == m_glassRim && haveShell == m_hasShell)
         return;
+    m_hasShell = haveShell;
     m_dark = dark;
     m_accent = accent;
     m_font = family;

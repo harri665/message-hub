@@ -1,7 +1,51 @@
-# Messages for Linux (`apps/desktop`)
+# Messages for Linux and Windows (`apps/desktop`)
 
 A native desktop client for the message hub, written in C++ and Qt Quick. It talks to the same hub API as the web app
-and uses the MacShell look.
+and uses the MacShell look, on Linux and on Windows alike.
+
+## Install
+
+Download the latest **Messages** release from the repository's
+[Releases](https://github.com/harri665/message-hub/releases) (tags `desktop-v…`):
+
+- **Windows**: run `MessageHub-win-Setup.exe`. It installs for your user only (no admin prompt) and starts Messages at
+  sign-in so notifications keep coming. The installer isn't signed yet, so the first time Windows shows *Windows
+  protected your PC*: choose **More info**, then **Run anyway**. Updates after that install quietly.
+- **Linux**: download `MessageHub-linux.AppImage`, put it somewhere permanent (for example `~/Applications`), make it
+  executable and run it. It adds its own *Messages* launcher entry. For notifications after login, start it in the
+  background with your session, e.g. in Hyprland: `hl.exec_cmd("~/Applications/MessageHub-linux.AppImage --background")`.
+
+Then sign in with the hub's address (for example `https://messages.example.com`) and its password. Each person uses
+their own hub's address. To build from source instead, see [Build from source](#build-from-source).
+
+## Updates
+
+The installed app updates itself from the GitHub releases, the same way on Windows and Linux (Velopack): it checks a
+minute after starting and then every six hours, downloads in the background, and installs the update the next time you
+close the window (it comes back in the background, already updated). An update that is ready shows a dot on the gear;
+the gear menu shows the version, and **Restart to Update** installs it right away. **Check for Updates** checks now.
+A build from source doesn't update itself.
+
+## Linux and Windows
+
+One codebase: all of the QML and the hub client are shared, and everything that differs between the systems sits in
+`src/platform_linux.cpp` and `src/platform_windows.cpp` behind `src/platform.h`. The QML never checks which system it
+runs on. Both apps are built from the same commit and released together under one version.
+
+| | Linux | Windows |
+|---|---|---|
+| Look (MacShell style, traffic lights, Open Runde font) | yes | yes, identical |
+| Dark / light | MacShell's setting, else the desktop's | Windows' setting |
+| Accent colour, 24-hour clock | from MacShell | macOS blue, 12-hour |
+| Notifications, click to open the chat | desktop notifications (D-Bus) | Windows notifications from the tray icon |
+| File picker | the desktop's (XDG portal) | Windows' file dialog |
+| Window glass | Hyprland + hyprglass (MacShell) | Windows 11 acrylic |
+| While the window is closed | keeps running, ~12 MB (restarts itself small) | keeps running in the tray (Open / Quit) |
+| Start at login | your compositor's config | set by the installer |
+| MacShell's Dynamic Island | yes | no (no MacShell) |
+| Automatic updates | AppImage | installer |
+
+New features go into the shared code; something that can only exist on one system gets a row here.
 
 ## What it does
 
@@ -76,7 +120,15 @@ The island side lives in MacShell's `DynamicIsland.qml` (marked `[msgisland]`).
 Measured on this laptop: about 42 MB PSS in the background (12 MB private; the rest is shared Qt libraries) and
 about 120 MB with the window open (most of that is the GPU driver).
 
-## Build and install
+## Releasing
+
+Push a tag `desktop-vX.Y.Z` (for example `git tag desktop-v1.3.0 && git push origin desktop-v1.3.0`). The *Desktop app*
+workflow builds both apps from that commit, packages them (Linux AppImage, Windows installer), screenshots each one as a
+smoke test, and publishes both in one GitHub release only if both succeed. Installed apps pick it up within six hours.
+Pushes and pull requests that touch `apps/desktop` run the same builds and screenshots without publishing; the
+screenshots are attached to the run (`screenshots-linux`, `screenshots-win`).
+
+## Build from source
 
 Needs Qt 6.5 or newer (Quick, Network, WebSockets, DBus, ShaderTools), CMake and a C++20 compiler.
 On Arch: `pacman -S qt6-declarative qt6-websockets qt6-shadertools cmake ninja`.
@@ -121,9 +173,14 @@ For development, with `MESSAGE_HUB_DEV=1` set on the running instance, `message-
 
 | Path | What it is |
 |---|---|
-| `src/hub.*` | Hub API client: sign-in, inbox, open chat, sending, search, live socket, attachments, notifications, file picker (XDG portal) |
+| `src/hub.*` | Hub API client: sign-in, inbox, open chat, sending, search, live socket, attachments, notifications and file picker (through `Platform`) |
 | `src/theme.*` | Reads and watches the MacShell settings; the glass option and the glass palette |
 | `src/listmodel.*` | List model that applies minimal changes, so lists keep their scroll position and recycle rows |
-| `src/main.cpp` | Single instance, window lifecycle (restart into background mode), compositor glass tags (Hyprland), attachment image provider |
+| `src/main.cpp` | Single instance, window lifecycle (restart into background mode), attachment image provider |
+| `src/platform.h`, `src/platform_linux.cpp`, `src/platform_windows.cpp` | Everything that differs between Linux and Windows (see [Linux and Windows](#linux-and-windows)) |
+| `src/updater.*` | Automatic updates (Velopack) |
+| `fonts/` | Open Runde (SIL OFL), built in so the app looks the same without MacShell |
+| `packaging/` | Windows icon |
+| `../../.github/workflows/desktop.yml` | Builds, tests and releases both apps |
 | `qml/` | The UI |
 | `shaders/roundedimage.frag` | Rounded corners for photos without an offscreen layer |

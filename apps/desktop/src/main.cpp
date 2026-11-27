@@ -1,25 +1,26 @@
 #include <QDir>
 #include <QFont>
 #include <QGuiApplication>
+#ifdef Q_OS_WIN
+#include <QApplication>  // the tray icon and the file dialog are Qt Widgets
+#endif
 #include <QImageReader>
 #include <QJsonDocument>
 #include <QJSEngine>
 #include <QLocalServer>
 #include <QMimeDatabase>
 #include <QLocalSocket>
-#include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQuickItem>
 #include <QQuickItemGrabResult>
 #include <QQuickWindow>
-#include <QStandardPaths>
 #include <QTimer>
-#include <malloc.h>
-#include <unistd.h>
 
 #include "app.h"
 #include "hub.h"
+#include "platform.h"
 #include "theme.h"
+#include "updater.h"
 
 // ---------- App ----------
 
@@ -42,50 +43,21 @@ App::App() {
         toIslands({{"type", "sent"}, {"tid", tid}, {"ok", ok}, {"error", error}});
     });
     connect(Theme::instance(), &Theme::changed, this, [this] { syncGlass(); });
+    // An update finished downloading while the window is closed: install it now (the app comes back in the background).
+    connect(Updater::instance(), &Updater::changed, this, [this] {
+        if (Updater::instance()->ready() && !m_engine) QTimer::singleShot(1500, this, &App::restartWhenIdle);
+    });
 }
 
 QQuickWindow *App::window() const {
     return m_engine ? qobject_cast<QQuickWindow *>(m_engine->rootObjects().value(0)) : nullptr;
 }
 
-// ---------- compositor glass (Hyprland + hyprglass) ----------
-// MacShell's Hyprland config draws window glass (the hyprglass plugin) only behind windows tagged hyprglass_enabled.
-// While glass is on the app tags its own window that way, with the light or dark glass to match, and takes the tags off
-// again when glass is turned off. With glass off from the start nothing is sent, so the window is exactly as before.
-namespace {
-void hyprlandRequest(const QByteArray &lua, const QByteArray &classic) {
-    const QString sig = qEnvironmentVariable("HYPRLAND_INSTANCE_SIGNATURE");
-    const QString runtime = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
-    if (sig.isEmpty() || runtime.isEmpty()) return;
-    auto *s = new QLocalSocket(qApp);
-    const bool isLua = !lua.isEmpty();
-    QObject::connect(s, &QLocalSocket::connected, s, [s, lua, classic] { s->write(lua.isEmpty() ? classic : lua); });
-    QObject::connect(s, &QLocalSocket::readyRead, s, [s, isLua, classic] {
-        // A Lua config (Hyprland 0.55+) answers "ok" to each dispatch; an older hyprland.conf setup rejects the Lua form.
-        if (isLua && !s->readAll().contains("ok")) hyprlandRequest({}, classic);
-        s->disconnectFromServer();
-    });
-    QObject::connect(s, &QLocalSocket::disconnected, s, &QObject::deleteLater);
-    QObject::connect(s, &QLocalSocket::errorOccurred, s, &QObject::deleteLater);
-    s->connectToServer(runtime + "/hypr/" + sig + "/.socket.sock");
-}
-}  // namespace
-
+// ---------- compositor glass ----------
+// With glass on, the compositor draws glass behind the window (hyprglass on Hyprland, acrylic on Windows 11) and the
+// QML tints it. With glass off from the start nothing is asked of the compositor, so the window is exactly as before.
 void App::syncGlass(bool again) {
-    if (!window() || !qEnvironmentVariableIsSet("HYPRLAND_INSTANCE_SIGNATURE")) return;
-    const int tags = !Theme::instance()->glass() ? 0 : Theme::instance()->dark() ? 1 : 2;
-    if (again ? tags == 0 : tags == m_glassTags) return;
-    m_glassTags = tags;
-    const QByteArray pid = QByteArray::number(QCoreApplication::applicationPid());
-    const QList<QByteArray> set = tags == 0 ? QList<QByteArray>{"-hyprglass_enabled", "-hyprglass_theme_dark", "-hyprglass_theme_light"}
-                                : tags == 1 ? QList<QByteArray>{"+hyprglass_enabled", "-hyprglass_theme_light", "+hyprglass_theme_dark"}
-                                            : QList<QByteArray>{"+hyprglass_enabled", "-hyprglass_theme_dark", "+hyprglass_theme_light"};
-    QByteArray lua = "[[BATCH]]", classic = "[[BATCH]]";
-    for (const QByteArray &t : set) {
-        lua += "dispatch hl.dsp.window.tag({ tag = \"" + t + "\", window = \"pid:" + pid + "\" });";
-        classic += "dispatch tagwindow " + t + " pid:" + pid + ";";
-    }
-    hyprlandRequest(lua, classic);
+    Platform::instance()->setGlass(window(), Theme::instance()->glass(), Theme::instance()->dark(), again);
 }
 
 // ---------- MacShell's Dynamic Island ----------
@@ -140,12 +112,8 @@ void App::showWindow(const QString &tid) {
             w->show();
             w->raise();
             w->requestActivate();
+            Platform::instance()->raise(w);
         }
-        // Wayland only lets a window take focus with an activation token; on Hyprland ask the compositor directly.
-        // (The first form is for Lua configs, the second for classic hyprland.conf; hyprctl exits 0 either way, so both run and the one that does not apply is a no-op.)
-        if (qEnvironmentVariable("XDG_CURRENT_DESKTOP").contains("Hyprland"))
-            QProcess::startDetached("sh", {"-c", "hyprctl dispatch 'hl.dsp.focus({ window = \"class:^(message-hub)$\" })' >/dev/null 2>&1; "
-                                                 "hyprctl dispatch focuswindow 'class:^(message-hub)$' >/dev/null 2>&1"});
         return;
     }
     m_engine = new QQmlApplicationEngine(this);
@@ -153,7 +121,7 @@ void App::showWindow(const QString &tid) {
     QObject::connect(m_engine, &QQmlApplicationEngine::objectCreationFailed, qApp, [] { QCoreApplication::exit(1); },
                      Qt::QueuedConnection);
     m_engine->loadFromModule("MessageHub", "Main");
-    m_glassTags = 0;
+    Platform::instance()->forgetWindow();
     // The compositor knows the window once its first frame is up. The tags go out then, and once more a moment later
     // in case the compositor handled them before it had mapped the window (adding a tag twice changes nothing).
     if (QQuickWindow *w = window())
@@ -169,7 +137,7 @@ void App::closeWindow() {
     if (auto *w = qobject_cast<QQuickWindow *>(m_engine->rootObjects().value(0))) w->hide();
     QQmlApplicationEngine *e = m_engine;
     m_engine = nullptr;
-    QObject::connect(e, &QObject::destroyed, [] { malloc_trim(0); });  // hand the freed pages back to the system
+    QObject::connect(e, &QObject::destroyed, [] { Platform::instance()->trimMemory(); });  // hand the freed memory back
     e->deleteLater();
     QTimer::singleShot(1500, this, &App::restartWhenIdle);
 }
@@ -177,17 +145,15 @@ void App::closeWindow() {
 // Once a window has been shown, the GPU driver and the Qt Quick runtime stay loaded (roughly 70 MB) even after the
 // window is gone. Starting over in background mode brings the process back to its idle size (about 12 MB of its own);
 // the inbox comes back from the disk cache and reopening still takes ~0.1 s. Waits for sends that are still going out.
+// A downloaded update is installed at this point instead: the updater starts the new version in the background.
 void App::restartWhenIdle() {
     if (m_engine || qEnvironmentVariableIsSet("MESSAGE_HUB_NO_RESTART")) return;
     if (!Hub::instance()->idle()) {
         QTimer::singleShot(1000, this, &App::restartWhenIdle);
         return;
     }
-    const QByteArray exe = QCoreApplication::applicationFilePath().toLocal8Bit();
-    char background[] = "--background";
-    char *args[] = {const_cast<char *>(exe.constData()), background, nullptr};
-    execv(exe.constData(), args);
-    malloc_trim(0);  // exec failed: carry on in this process
+    if (Updater::instance()->ready() && Updater::instance()->applyAndExit({"--background"})) return;
+    if (!Platform::instance()->restartInBackground()) Platform::instance()->trimMemory();
 }
 
 // exit(), not quit(): quit() first asks the window to close, and closing only hides it.
@@ -280,10 +246,14 @@ QQuickImageResponse *AttachmentImages::requestImageResponse(const QString &id, c
 // ---------- main ----------
 
 int main(int argc, char *argv[]) {
-    // Qt runs a render thread and image threads; two malloc arenas instead of one per thread keeps the heap small.
-    mallopt(M_ARENA_MAX, 2);
+    Updater::startup();  // first: the installer may start the app just to run its hooks
+    Platform::beforeApp();
     QQuickWindow::setDefaultAlphaBuffer(true);  // rounded window corners
+#ifdef Q_OS_WIN
+    QApplication app(argc, argv);
+#else
     QGuiApplication app(argc, argv);
+#endif
     QGuiApplication::setApplicationName("message-hub");
     QGuiApplication::setApplicationDisplayName("Messages");
     QGuiApplication::setDesktopFileName("message-hub");
@@ -305,8 +275,7 @@ int main(int argc, char *argv[]) {
     }
 
     // One instance: a second launch (Dock, Spotlight, notification) just tells the running one what to do.
-    const QString runtime = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
-    const QString socketPath = qEnvironmentVariable("MESSAGE_HUB_SOCKET", (runtime.isEmpty() ? QDir::tempPath() : runtime) + "/message-hub.sock");
+    const QString socketPath = qEnvironmentVariable("MESSAGE_HUB_SOCKET", Platform::socketName());
     {
         QLocalSocket probe;
         probe.connectToServer(socketPath);
@@ -339,9 +308,13 @@ int main(int argc, char *argv[]) {
     applyFont();
     QObject::connect(Theme::instance(), &Theme::changed, &app, applyFont);
 
+    Platform::instance()->init();
+    QObject::connect(Platform::instance(), &Platform::showRequested, &app, [] { App::instance()->showWindow(); });
+    QObject::connect(Platform::instance(), &Platform::quitRequested, &app, [] { App::instance()->quit(); });
     Hub::instance();
     if (!glass.isEmpty()) Theme::instance()->setGlassMode(glass);
     QObject::connect(Hub::instance(), &Hub::showRequested, &app, [](const QString &tid) { App::instance()->showWindow(tid); });
+    Updater::instance();
 
     if (command.startsWith("show")) App::instance()->showWindow(command.mid(5).trimmed());
     return app.exec();

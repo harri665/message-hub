@@ -39,7 +39,6 @@ private:
     QQuickWindow *window() const;
     void syncGlass(bool again = false);
     QPointer<QQmlApplicationEngine> m_engine;
-    int m_glassTags = 0;  // what the compositor was told about this window: 0 nothing (no glass), 1 dark glass, 2 light glass
     QList<QLocalSocket *> m_islands;
     QTimer m_islandState;  // coalesces inbox changes into one state message
 };
