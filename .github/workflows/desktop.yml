@@ -41,7 +41,7 @@ jobs:
       - name: Version
         id: v
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then v="${GITHUB_REF#refs/tags/desktop-v}"; else v="0.0.0-ci.${GITHUB_RUN_NUMBER}"; fi
+          if [[ "$GITHUB_REF" == refs/tags/desktop-v* ]]; then v="${GITHUB_REF#refs/tags/desktop-v}"; else v="0.0.1-ci.${GITHUB_RUN_NUMBER}"; fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "Building $v"
 
@@ -115,7 +115,9 @@ jobs:
       # development commands. Catches missing libraries, plugins or QML, and shows both apps side by side.
       - name: Smoke test
         run: |
+          set +e  # keep going on failure, to print what went wrong
           exe=pack/message-hub; [ "$RUNNER_OS" = Windows ] && exe=pack/message-hub.exe
+          echo "Libraries the package is missing:"; ldd "$exe" | grep -i "not found"; echo "(end)"
           mkdir -p shots t/config t/cache t/plugins/platforms
           # The package only carries the real platform plugins; borrow Qt's offscreen one for the test.
           cp "$QT_ROOT_DIR"/plugins/platforms/*qoffscreen* t/plugins/platforms/
@@ -124,13 +126,15 @@ jobs:
           export XDG_CONFIG_HOME="$PWD/t/config" XDG_CACHE_HOME="$PWD/t/cache" MESSAGE_HUB_SOCKET="mh-ci-${{ matrix.channel }}"
           [ "$RUNNER_OS" = Linux ] && export MESSAGE_HUB_SOCKET="$PWD/t/sock"
           "$exe" > t/log.txt 2>&1 &
+          pid=$!
           sleep 8
+          kill -0 $pid 2>/dev/null || { wait $pid; echo "The app exited at once with status $?"; }
           "$exe" --dev "resize 1000x700"; sleep 1
           shot="$PWD/shots/${{ matrix.channel }}-signin.png"
           [ "$RUNNER_OS" = Windows ] && shot="$(cygpath -m "$shot")"
           "$exe" --dev "grab $shot"; sleep 3
           "$exe" --quit; sleep 2
-          cat t/log.txt
+          echo "App output:"; cat t/log.txt
           test -s "shots/${{ matrix.channel }}-signin.png" || { echo "The app did not start or render"; exit 1; }
 
       - uses: actions/upload-artifact@v4
