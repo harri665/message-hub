@@ -11,6 +11,7 @@ Item {
     required property int unread
     required property string service
     required property bool isGroup
+    required property bool muted
     signal clicked()
 
     readonly property bool selected: Hub.currentTid === tid
@@ -33,7 +34,7 @@ Item {
         height: 9
         radius: 4.5
         visible: row.unread > 0
-        color: row.selected ? "white" : Theme.accent
+        color: row.selected ? "white" : (row.muted ? Theme.text3 : Theme.accent)
     }
     Avatar {
         id: avatar
@@ -47,8 +48,8 @@ Item {
         id: name
         anchors.left: avatar.visible ? avatar.right : parent.left
         anchors.leftMargin: avatar.visible ? 10 : 28
-        anchors.right: stamp.left
-        anchors.rightMargin: 6
+        anchors.right: bell.visible ? bell.left : stamp.left
+        anchors.rightMargin: bell.visible ? 4 : 6
         y: 12
         text: row.title
         color: row.fg
@@ -67,6 +68,7 @@ Item {
         font.pixelSize: 12
     }
     Rectangle {
+        id: dot
         anchors.right: stamp.left
         anchors.rightMargin: 5
         anchors.verticalCenter: stamp.verticalCenter
@@ -76,6 +78,19 @@ Item {
         visible: row.service.length > 0
         color: row.selected ? "white" : (row.service === "whatsapp" ? Theme.whatsapp : (row.service === "imessage" ? Theme.accent : Theme.sms))
         border.width: row.selected ? 0 : 0
+    }
+    // Muted on the phone
+    Glyph {
+        id: bell
+        anchors.right: dot.visible ? dot.left : stamp.left
+        anchors.rightMargin: 5
+        anchors.verticalCenter: stamp.verticalCenter
+        width: 11
+        height: 11
+        stroke: 1.2
+        name: "muted"
+        color: row.fg2
+        visible: row.muted
     }
     Text {
         anchors.left: name.left

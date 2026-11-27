@@ -9,6 +9,9 @@ and uses the MacShell look.
 - Sending text and files (the **+** button opens the desktop's file picker; you can also drop files into a chat),
   choosing the service when a person has more than one chat, replying (right-click a message).
 - Live updates over the hub's WebSocket and desktop notifications for new messages. Clicking one opens the chat.
+- **Muted chats stay quiet**: chats the hub marks as muted (WhatsApp chats muted on the phone, or chats muted in the
+  web app) show a crossed-out bell and a grey unread dot, send no notifications, don't pop up in the Dynamic Island,
+  and don't add to the unread count.
 - **Follows MacShell's theme while it runs**: dark/light mode, accent colour, the Open Runde font and the 24-hour
   clock are read from `~/.config/macdock/settings.json` and `~/.config/macbar/settings.json`. The window, traffic lights and
   colours match MacShell's own app windows. Without MacShell it follows the desktop's dark/light setting.

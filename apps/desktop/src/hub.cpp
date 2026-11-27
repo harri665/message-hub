@@ -143,8 +143,8 @@ Hub *Hub::create(QQmlEngine *, QJSEngine *) {
 }
 
 Hub::Hub()
-    : m_threadModel({"tid", "title", "initials", "time", "preview", "unread", "service", "isGroup"}, "tid"),
-      m_resultModel({"key", "tid", "title", "initials", "time", "preview", "unread", "service", "isGroup"}, "key"),
+    : m_threadModel({"tid", "title", "initials", "time", "preview", "unread", "service", "isGroup", "muted"}, "tid"),
+      m_resultModel({"key", "tid", "title", "initials", "time", "preview", "unread", "service", "isGroup", "muted"}, "key"),
       m_messageModel({"key", "id", "fromMe", "kind", "html", "body", "jumbo", "time", "service", "senderName", "showName",
                       "separator", "tail", "statusText", "failed", "pending", "attachments", "reactions", "replyName",
                       "replyBody", "unsent", "edited"},
@@ -394,6 +394,7 @@ QVariantMap Hub::decorateThread(QVariantMap t) const {
     t["initials"] = initialsOf(title);
     t["time"] = listTime(parseTime(t.value("last_at")));
     t["isGroup"] = t.value("is_group").toBool();
+    t["muted"] = t.value("muted").toBool();  // muted on the phone: no notifications
     t["service"] = t.value("last_service").toString().isEmpty() ? QStringLiteral("imessage") : t.value("last_service").toString();
 
     QString preview;
@@ -441,7 +442,8 @@ void Hub::applyThreads(const QList<QVariantMap> &rows, bool save) {
 void Hub::rebuildThreadModel() {
     emit inboxChanged();
     int unread = 0;
-    for (const auto &t : std::as_const(m_allThreads)) unread += t.value("unread").toInt();
+    for (const auto &t : std::as_const(m_allThreads))
+        if (!t.value("muted").toBool()) unread += t.value("unread").toInt();  // muted chats don't add to the count
     if (unread != m_unreadTotal) {
         m_unreadTotal = unread;
         emit unreadTotalChanged();
@@ -482,7 +484,7 @@ void Hub::search(const QString &q) {
             rows << QVariantMap{{"key", "r" + m.value("id").toString()},
                                 {"tid", m.value("tid")},
                                 {"title", m.value("thread_title").toString().isEmpty() ? who : m.value("thread_title")},
-                                {"initials", QString()}, {"unread", 0}, {"service", QString()}, {"isGroup", false},
+                                {"initials", QString()}, {"unread", 0}, {"service", QString()}, {"isGroup", false}, {"muted", false},
                                 {"time", listTime(parseTime(m.value("sent_at")))},
                                 {"preview", (who.isEmpty() ? QString() : who.section(' ', 0, 0) + ": ") + oneLine(m.value("body").toString())}};
         }
@@ -835,7 +837,8 @@ QJsonObject Hub::islandState(int threads) const {
         list << QJsonObject{{"tid", t.value("tid").toString()}, {"title", t.value("title").toString()},
                             {"initials", t.value("initials").toString()}, {"time", t.value("time").toString()},
                             {"preview", t.value("preview").toString()}, {"unread", t.value("unread").toInt()},
-                            {"service", t.value("service").toString()}, {"isGroup", t.value("isGroup").toBool()}};
+                            {"service", t.value("service").toString()}, {"isGroup", t.value("isGroup").toBool()},
+                            {"muted", t.value("muted").toBool()}};
     }
     return QJsonObject{{"type", "state"}, {"signedIn", signedIn()}, {"online", m_online}, {"unread", m_unreadTotal},
                        {"threads", list}};
@@ -1055,7 +1058,8 @@ void Hub::onLive(const QString &text) {
         }
         // The local patch shows it at once; the hub's own list follows a little later.
         scheduleThreads(patched ? 5000 : 300);
-        if (!fromMe && !preview.isEmpty()) {
+        // Chats muted on the phone stay quiet here too: no notification and no island banner, only the unread count.
+        if (!fromMe && !preview.isEmpty() && !preview.value("muted").toBool()) {
             QVariantMap m = preview;
             QString who = preview.value("sender_name").toString();
             if (who.isEmpty()) who = preview.value("title").toString();

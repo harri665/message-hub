@@ -68,6 +68,31 @@ Canvas {
             ctx.moveTo(w * 0.12, h * 0.54); ctx.lineTo(w * 0.4, h * 0.82); ctx.lineTo(w * 0.9, h * 0.18);
             ctx.stroke();
             break;
+        case "muted": {
+            // a bell with a slash through it
+            ctx.moveTo(w * 0.5, h * 0.12);
+            ctx.bezierCurveTo(w * 0.29, h * 0.12, w * 0.25, h * 0.3, w * 0.25, h * 0.46);
+            ctx.lineTo(w * 0.25, h * 0.6); ctx.lineTo(w * 0.14, h * 0.74); ctx.lineTo(w * 0.86, h * 0.74);
+            ctx.lineTo(w * 0.75, h * 0.6); ctx.lineTo(w * 0.75, h * 0.46);
+            ctx.bezierCurveTo(w * 0.75, h * 0.3, w * 0.71, h * 0.12, w * 0.5, h * 0.12);
+            ctx.closePath();
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(w * 0.5, h * 0.8, w * 0.1, 0, Math.PI);
+            ctx.fill();
+            // cut a gap around the slash so it reads against the bell, then draw it
+            ctx.globalCompositeOperation = "destination-out";
+            ctx.beginPath();
+            ctx.lineWidth = g.stroke * 2.6;
+            ctx.moveTo(w * 0.1, h * 0.08); ctx.lineTo(w * 0.9, h * 0.92);
+            ctx.stroke();
+            ctx.globalCompositeOperation = "source-over";
+            ctx.beginPath();
+            ctx.lineWidth = g.stroke;
+            ctx.moveTo(w * 0.1, h * 0.08); ctx.lineTo(w * 0.9, h * 0.92);
+            ctx.stroke();
+            break;
+        }
         case "gear": {
             // a filled cog with eight teeth and a round hole
             const cx = w / 2, cy = h / 2, ro = w * 0.5, ri = w * 0.37, n = 8;
