@@ -107,7 +107,7 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           mkdir pack
-          cp build/message-hub.exe build/velopack_libc_win_x64_msvc.dll pack/
+          cp build/message-hub.exe build/velopack_libc.dll pack/
           "$QT_ROOT_DIR/bin/windeployqt.exe" --release --qmldir apps/desktop/qml --no-translations \
             --no-system-d3d-compiler --no-opengl-sw pack/message-hub.exe
 

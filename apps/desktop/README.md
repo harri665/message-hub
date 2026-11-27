@@ -11,9 +11,9 @@ Download the latest **Messages** release from the repository's
 - **Windows**: run `MessageHub-win-Setup.exe`. It installs for your user only (no admin prompt) and starts Messages at
   sign-in so notifications keep coming. The installer isn't signed yet, so the first time Windows shows *Windows
   protected your PC*: choose **More info**, then **Run anyway**. Updates after that install quietly.
-- **Linux**: download `MessageHub-linux.AppImage`, put it somewhere permanent (for example `~/Applications`), make it
+- **Linux**: download `MessageHub.AppImage`, put it somewhere permanent (for example `~/Applications`), make it
   executable and run it. It adds its own *Messages* launcher entry. For notifications after login, start it in the
-  background with your session, e.g. in Hyprland: `hl.exec_cmd("~/Applications/MessageHub-linux.AppImage --background")`.
+  background with your session, e.g. in Hyprland: `hl.exec_cmd("~/Applications/MessageHub.AppImage --background")`.
 
 Then sign in with the hub's address (for example `https://messages.example.com`) and its password. Each person uses
 their own hub's address. To build from source instead, see [Build from source](#build-from-source).

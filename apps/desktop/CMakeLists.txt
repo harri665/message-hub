@@ -90,10 +90,10 @@ if(MESSAGE_HUB_UPDATER)
   target_compile_definitions(message-hub PRIVATE MESSAGE_HUB_UPDATER)
   target_include_directories(message-hub PRIVATE "${VELOPACK_DIR}/include")
   if(WIN32)
-    # The DLL goes next to message-hub.exe.
+    # The DLL goes next to message-hub.exe under the name its import library expects (velopack_libc.dll).
     target_link_libraries(message-hub PRIVATE "${VELOPACK_DIR}/lib/velopack_libc_win_x64_msvc.dll.lib")
     add_custom_command(TARGET message-hub POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${VELOPACK_DIR}/lib/velopack_libc_win_x64_msvc.dll" "$<TARGET_FILE_DIR:message-hub>")
+      "${VELOPACK_DIR}/lib/velopack_libc_win_x64_msvc.dll" "$<TARGET_FILE_DIR:message-hub>/velopack_libc.dll")
   else()
     # Linked in statically, so the AppImage has no extra library to find.
     target_link_libraries(message-hub PRIVATE "${VELOPACK_DIR}/lib-static/velopack_libc_linux_x64_gnu.a" pthread dl m)
