@@ -103,3 +103,13 @@ test('skipReason leaves out stickers, unsupported formats and tiny images', () =
   assert.equal(skipReason({ mime: 'image/png', filename: 'dot.png', width: 10 }), 'too small');
   assert.equal(skipReason({ mime: 'image/webp', filename: 'photo.webp', width: 1200 }), null);
 });
+
+test('relevantHits keeps close matches near the best one', async () => {
+  const { relevantHits } = await import('../src/ai/searchindex.ts');
+  const hits = (...s: number[]) => s.map((score) => ({ score }));
+  assert.deepEqual(relevantHits(hits(0.67, 0.52, 0.43, 0.37)).map((h) => h.score), [0.67]);
+  assert.deepEqual(relevantHits(hits(0.53, 0.528, 0.46, 0.42)).map((h) => h.score), [0.53, 0.528, 0.46]);
+  // An unrelated search ("car insurance") shows nothing.
+  assert.deepEqual(relevantHits(hits(0.403, 0.401, 0.36)), []);
+  assert.deepEqual(relevantHits(hits(0.45, 0.41, 0.33), 0.4, 0.15).map((h) => h.score), [0.45, 0.41]);
+});

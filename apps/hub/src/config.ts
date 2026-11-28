@@ -1,5 +1,7 @@
 import path from 'node:path';
 
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
 function required(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing required environment variable ${name}`);
@@ -35,12 +37,14 @@ export const config = {
     token: process.env.CF_API_TOKEN ?? '',
     /** Neurons the hub may spend per UTC day. Cloudflare's free allowance is 10,000. */
     dailyNeurons: Number(process.env.AI_DAILY_NEURONS) || 10_000,
+    /** Whose hub this is, shown next to its Neuron count: HUB_OWNER, else the first SELF_NAMES entry. */
+    owner: process.env.HUB_OWNER?.trim() || capitalize((process.env.SELF_NAMES ?? '').split(',')[0]?.trim() ?? ''),
     /** Overrides the API base (for AI Gateway); defaults to the Workers AI REST API for the account. */
     baseUrl: (process.env.AI_BASE_URL ?? '').replace(/\/+$/, ''),
     models: {
-      answer: process.env.AI_MODEL_ANSWER || '@cf/moonshotai/kimi-k2.5',
+      answer: process.env.AI_MODEL_ANSWER || '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
       reply: process.env.AI_MODEL_REPLY || '@cf/openai/gpt-oss-120b',
-      vision: process.env.AI_MODEL_VISION || '@cf/meta/llama-4-scout-17b-16e-instruct',
+      vision: process.env.AI_MODEL_VISION || '@cf/google/gemma-4-26b-a4b-it',
       fallback: process.env.AI_MODEL_FALLBACK || '@cf/google/gemma-4-26b-a4b-it',
       embed: '@cf/baai/bge-m3',
     },

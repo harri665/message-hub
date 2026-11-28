@@ -276,10 +276,18 @@ async function loadSearch(f: SearchFilter) {
   let from = '';
   let snippet = 'left(m.body, 200)';
   if (tsq) {
-    from = `, to_tsquery('simple', ${arg(tsq)}) query`;
-    where.push('m.tsv @@ query');
-    snippet = `ts_headline('simple', m.body, query,
+    const tq = arg(tsq);
+    from = `, to_tsquery('simple', ${tq}) query`;
+    // The words can be in the message text or in the AI description of a photo in it (both GIN-indexed; the union
+    // lets each index be used, where an OR would scan every message).
+    where.push(`m.id in (select id from message where tsv @@ to_tsquery('simple', ${tq})
+                         union select message_id from attachment where description_tsv @@ to_tsquery('simple', ${tq}))`);
+    const headline = (text: string) => `ts_headline('simple', ${text}, query,
               'StartSel=${HIT_START}, StopSel=${HIT_END}, MaxWords=24, MinWords=10, MaxFragments=2, FragmentDelimiter=" … "')`;
+    // A photo found by its description shows the description, so it's clear why it matched.
+    snippet = `case when m.tsv @@ query then ${headline('m.body')}
+              else 'Photo: ' || ${headline(`(select string_agg(a.description, ' ') from attachment a
+                                             where a.message_id = m.id and a.description_tsv @@ query)`)} end`;
   }
   if (convIds) where.push(`m.conversation_id = any(${arg(convIds)})`);
   const services = f.service === 'apple' ? ['imessage', 'sms', 'rcs'] : f.service ? [f.service] : null;

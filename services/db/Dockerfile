@@ -1,4 +1,4 @@
-# The stack's Postgres, with the pgvector extension for search by meaning (apps/hub/migrations/010_ai.sql).
+# The stack's Postgres, with the pgvector extension for search by meaning (apps/hub/migrations/012_ai.sql).
 # Built on the same postgres:17-alpine image as before, so the existing data directory (and its musl collation) is
 # used as it is. Switching to the Debian-based pgvector image would change the collation under existing text indexes.
 FROM postgres:17-alpine

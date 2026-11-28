@@ -121,7 +121,8 @@ function buildServer(requestedBy: string) {
     {
       title: 'Search messages',
       description:
-        'Full-text search over message text, newest first. Every word must appear; words match as prefixes ("pizz" finds "pizza"). ' +
+        'Full-text search over message text, and over AI descriptions of photos when AI features are on, newest first. ' +
+        'Every word must appear; words match as prefixes ("pizz" finds "pizza"). ' +
         'Use "quoted words" for a phrase and -word to exclude a word. Filter by conversation, service, sender or date. ' +
         'The query also understands Discord-style filters written inside it: from: <name, number or me>, in: <chat or person name>, ' +
         'has: image|video|audio|file|link|sticker|attachment (repeat to require several), before:/after:/during: <2026-11-25, 2026-11, nov 25, yesterday>, ' +

@@ -88,8 +88,18 @@ Rectangle {
             { label: "Off", checked: Theme.glassMode === "off", action: set("off") },
             { label: "Hub", header: true },
             { label: "Hub Settings…", detail: "Opens in the browser", action: () => Hub.openHubSettings() },
-            { label: "Messages " + Updater.version, header: true }
         ];
+        // Today's Cloudflare AI use: this hub's (whose it is) and what's left of the account's shared daily allowance.
+        // Both open the hub's Settings, which has the details. Refreshed on every open, so the next open is current.
+        const ai = Hub.aiUsage;
+        Hub.refreshAiUsage();
+        if (ai && ai.limit) {
+            const n = v => Number(v).toLocaleString(Qt.locale(), "f", 0);
+            items.push({ label: "AI today", header: true });
+            items.push({ label: ai.owner ? "Used by " + ai.owner : "Used by this hub", detail: n(ai.hubUsed) + " Neurons", action: () => Hub.openHubSettings() });
+            items.push({ label: ai.accountKnown ? "Left on account" : "Left (this hub only)", detail: n(ai.remaining) + " of " + n(ai.limit), action: () => Hub.openHubSettings() });
+        }
+        items.push({ label: "Messages " + Updater.version, header: true });
         if (Updater.enabled) items.push(side.updateItem());
         // Closing the window keeps the app running for notifications; this ends it for real (Ctrl+Q does the same).
         items.push({ label: "Force Quit", detail: "Ctrl+Q", action: () => App.quit() });

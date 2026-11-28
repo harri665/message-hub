@@ -25,6 +25,7 @@ export const PRICES: Record<string, { input: number; output: number }> = {
   '@cf/meta/llama-3.3-70b-instruct-fp8-fast': { input: 26668, output: 204805 },
   '@cf/meta/llama-4-scout-17b-16e-instruct': { input: 24545, output: 77273 },
   '@cf/mistralai/mistral-small-3.1-24b-instruct': { input: 31876, output: 50488 },
+  '@cf/qwen/qwen3.8-27b': { input: 40909, output: 290909 },
   '@cf/google/gemma-4-26b-a4b-it': { input: 9091, output: 27273 },
   '@cf/qwen/qwen3-30b-a3b-fp8': { input: 4625, output: 30475 },
   '@cf/zai-org/glm-4.7-flash': { input: 5500, output: 36400 },
@@ -73,9 +74,24 @@ async function load() {
   await loading;
 }
 
+/** Neurons this hub has spent today (its own count). */
+export async function hubUsedToday() {
+  await load();
+  return used;
+}
+
+/**
+ * Neurons spent today by the whole Cloudflare account, which every hub using the same token shares (for example one
+ * hub per person). Cloudflare's count is read every couple of minutes and lags a little, so this hub's own spending
+ * since the last read is added on top; it is never less than this hub's own count. The budget uses this number, so
+ * all hubs on one account stay inside the one free allowance together.
+ */
 export async function usedToday() {
   await load();
-  return exhausted ? Math.max(used, config.ai.dailyNeurons) : used;
+  refreshAccountUsage().catch(() => {});
+  let total = used;
+  if (account.day === day && account.used !== null) total = Math.max(used, account.used + (used - account.hubUsedAtCheck));
+  return exhausted ? Math.max(total, config.ai.dailyNeurons) : total;
 }
 
 export async function budget(priority: Priority): Promise<BudgetDecision> {
@@ -100,6 +116,61 @@ export async function record(feature: string, model: string, inputTokens: number
 export async function markExhausted() {
   await load();
   exhausted = true;
+}
+
+// ---------- the whole account's use, from Cloudflare's GraphQL Analytics API ----------
+
+const ACCOUNT_TTL_MS = 2 * 60_000;
+const account = { day: '', used: null as number | null, hubUsedAtCheck: 0, checkedAt: 0, error: null as string | null };
+let accountLoading: Promise<void> | null = null;
+
+/** Reads today's Workers AI Neurons for the account (dataset aiInferenceAdaptiveGroups, UTC day). */
+export async function fetchAccountNeurons(day: string): Promise<number> {
+  const res = await fetch('https://api.cloudflare.com/client/v4/graphql', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${config.ai.token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      query: `query($acc: string!, $day: Date!) { viewer { accounts(filter: { accountTag: $acc }) {
+        aiInferenceAdaptiveGroups(limit: 1, filter: { date: $day }) { sum { totalNeurons } } } } }`,
+      variables: { acc: config.ai.accountId, day },
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const data: any = await res.json().catch(() => ({}));
+  const err = data?.errors?.[0];
+  if (err) {
+    throw new Error(err.extensions?.code === 'authz'
+      ? 'Add the "Account Analytics: Read" permission to the Cloudflare API token to see the whole account.'
+      : `Cloudflare analytics: ${err.message ?? 'error'}`);
+  }
+  if (!res.ok) throw new Error(`Cloudflare analytics: HTTP ${res.status}`);
+  const groups = data?.data?.viewer?.accounts?.[0]?.aiInferenceAdaptiveGroups ?? [];
+  return Number(groups[0]?.sum?.totalNeurons ?? 0);
+}
+
+/** Refreshes the account's count when it is older than a couple of minutes (or always, with force). */
+export function refreshAccountUsage(force = false): Promise<void> {
+  const today = utcDay();
+  if (!force && account.day === today && Date.now() - account.checkedAt < ACCOUNT_TTL_MS) return Promise.resolve();
+  accountLoading ??= (async () => {
+    await load();
+    const hubUsed = used;
+    try {
+      const n = await fetchAccountNeurons(today);
+      Object.assign(account, { day: today, used: n, hubUsedAtCheck: hubUsed, error: null });
+    } catch (e) {
+      Object.assign(account, { day: today, used: null, hubUsedAtCheck: hubUsed, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      account.checkedAt = Date.now();
+    }
+  })().finally(() => { accountLoading = null; });
+  return accountLoading;
+}
+
+/** The account's count for the Settings page: Cloudflare's number (null when it can't be read) and why not. */
+export async function accountUsage() {
+  await refreshAccountUsage();
+  return { used: account.day === utcDay() ? account.used : null, checkedAt: account.checkedAt ? new Date(account.checkedAt).toISOString() : null, error: account.error };
 }
 
 export async function usageToday() {

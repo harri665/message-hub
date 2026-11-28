@@ -94,9 +94,16 @@ export type SearchService = 'apple' | 'whatsapp' | '';
 /** AI features (Cloudflare Workers AI). Off unless the hub has CF_ACCOUNT_ID and CF_API_TOKEN. */
 export type AiStatus = { enabled: false } | {
   enabled: true;
-  /** Neurons spent today, of the daily limit; the count resets at resetsAt (00:00 UTC). */
+  /** Whose hub this is (HUB_OWNER or the first SELF_NAMES entry), or null. */
+  owner: string | null;
+  /** Neurons this hub spent today. */
+  hubUsedToday: number;
+  /** Neurons the whole Cloudflare account spent today as the budget sees it (all hubs sharing it), and what's left. */
   usedToday: number;
+  remaining: number;
   limit: number;
+  /** Cloudflare's own count for the account; null with an error when the token can't read analytics. */
+  account: { usedToday: number | null; checkedAt: string | null; error: string | null };
   resetsAt: string;
   usage: { feature: string; model: string; requests: number; neurons: number }[];
   photos: { described: number; pending: number; skipped: number };

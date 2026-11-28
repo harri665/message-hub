@@ -44,6 +44,9 @@ class Hub : public QObject {
     Q_PROPERTY(int archivedCount READ archivedCount NOTIFY archivedChanged)
     Q_PROPERTY(int archivedUnread READ archivedUnread NOTIFY archivedChanged)
     Q_PROPERTY(bool windowActive READ windowActive WRITE setWindowActive NOTIFY windowActiveChanged)
+    // Today's Cloudflare Workers AI use, for the gear menu: { owner, hubUsed, remaining, limit, accountKnown };
+    // empty when the hub's AI features are off.
+    Q_PROPERTY(QVariantMap aiUsage READ aiUsage NOTIFY aiUsageChanged)
     // Messages the hub will send later in the open chat (and failed ones, with their error).
     Q_PROPERTY(JsonListModel *scheduled READ scheduled CONSTANT)
     Q_PROPERTY(QString hubTimeZone READ hubTimeZone NOTIFY hubTimeZoneChanged)
@@ -80,6 +83,7 @@ public:
     int archivedCount() const { return m_archivedCount; }
     int archivedUnread() const { return m_archivedUnread; }
     bool windowActive() const { return m_windowActive; }
+    QVariantMap aiUsage() const { return m_aiUsage; }
     void setWindowActive(bool a);
 
     Q_INVOKABLE void login(const QString &server, const QString &password);
@@ -194,6 +198,7 @@ public:
     Q_INVOKABLE void approveSend(int id);
     Q_INVOKABLE void rejectSend(int id);   // also dismisses a failed one
     Q_INVOKABLE void openHubSettings();    // the hub's web settings, in the browser
+    Q_INVOKABLE void refreshAiUsage();     // also every 30 s with the connection status
 private:
     void initApprovals();                  // called once from the constructor
     void refreshApprovals();               // also on the live "send-request" event
@@ -227,6 +232,7 @@ signals:
     void olderChanged();
     void unreadTotalChanged();
     void archivedChanged();
+    void aiUsageChanged();
     void windowActiveChanged();
     void showRequested(const QString &tid);
     void inboxChanged();
@@ -303,6 +309,8 @@ private:
     bool m_showArchived = false;
     int m_archivedCount = 0;
     int m_archivedUnread = 0;
+    QVariantMap m_aiUsage;
+    QNetworkReply *m_aiUsageReply = nullptr;
     QList<QVariantMap> m_archivedThreads;  // only loaded while the archived list is showing
     QNetworkReply *m_archivedReply = nullptr;
     int m_writes = 0;  // sends still going out

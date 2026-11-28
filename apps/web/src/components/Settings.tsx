@@ -86,17 +86,31 @@ function AiFeatures() {
   }
   const share = Math.min(1, s.usedToday / s.limit);
   const reset = new Date(s.resetsAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const others = s.account.usedToday === null ? null : Math.max(0, s.usedToday - s.hubUsedToday);
   return (
     <div className="group">
       <div className="group-body">
-        <div className="ai-meter" role="meter" aria-valuemin={0} aria-valuemax={s.limit} aria-valuenow={s.usedToday} aria-label="AI allowance used today">
+        <div className="ai-meter" role="meter" aria-valuemin={0} aria-valuemax={s.limit} aria-valuenow={s.usedToday} aria-label="Cloudflare allowance used today">
           <span style={{ width: `${share * 100}%` }} className={share >= 0.8 ? 'high' : ''} />
         </div>
         <p className="note" style={{ margin: 0 }}>
-          {num(s.usedToday)} of {num(s.limit)} Neurons used today. Resets at {reset}.
+          {num(s.remaining)} of {num(s.limit)} Neurons left today. Resets at {reset}.
           {share >= 0.8 && ' Answers and suggestions now use the cheaper fallback model.'}
         </p>
       </div>
+      <div className="group-row">
+        <span>{s.owner ? `Used by ${s.owner}` : 'Used by this hub'}</span>
+        <span className="value">{num(s.hubUsedToday)} Neurons</span>
+      </div>
+      <div className="group-row">
+        <span>Used by everyone on this Cloudflare account</span>
+        <span className="value" title={s.account.error ?? undefined}>
+          {s.account.usedToday === null ? 'unknown' : `${num(s.usedToday)} Neurons${others ? ` (${num(others)} from other hubs)` : ''}`}
+        </span>
+      </div>
+      {s.account.error && (
+        <div className="group-body"><p className="note" style={{ margin: 0 }}>{s.account.error} Until then, "left today" counts only this hub.</p></div>
+      )}
       <div className="group-row">
         <span>Photo descriptions</span>
         <span className="value">{num(s.photos.described)} described{s.photos.pending ? `, ${num(s.photos.pending)} waiting` : ''}</span>

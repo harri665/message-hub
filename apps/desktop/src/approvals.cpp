@@ -218,6 +218,31 @@ void Hub::refreshStatus() {
             emit statusChanged();
         }
     }, [this](int, const QString &) { m_statusReply = nullptr; });  // the status row keeps what it had
+    refreshAiUsage();
+}
+
+// ---------- AI usage (gear menu) ----------
+
+void Hub::refreshAiUsage() {
+    if (!signedIn() || m_aiUsageReply) return;
+    m_aiUsageReply = call("GET", "/api/ai/status");
+    handle(m_aiUsageReply, [this](const QJsonDocument &doc) {
+        m_aiUsageReply = nullptr;
+        const QJsonObject s = doc.object();
+        QVariantMap u;
+        if (s.value("enabled").toBool()) {
+            u["owner"] = s.value("owner").toString();
+            u["hubUsed"] = s.value("hubUsedToday").toInt();
+            u["remaining"] = s.value("remaining").toInt();
+            u["limit"] = s.value("limit").toInt();
+            // Without Cloudflare's account-wide count, "remaining" only knows about this hub's own use.
+            u["accountKnown"] = !s.value("account").toObject().value("usedToday").isNull();
+        }
+        if (u != m_aiUsage) {
+            m_aiUsage = u;
+            emit aiUsageChanged();
+        }
+    }, [this](int, const QString &) { m_aiUsageReply = nullptr; });  // an older hub without /api/ai/status: menu stays as is
 }
 
 void Hub::openHubSettings() {

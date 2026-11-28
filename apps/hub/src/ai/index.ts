@@ -9,8 +9,8 @@ import type { WhatsApp } from '../sources/whatsapp.js';
 import { bus, type LiveEvent } from '../store.js';
 import { ask, suggestReplies } from './assist.js';
 import { describePhotos, photoStats } from './photos.js';
-import { indexRound, indexStats, markChunkStale, searchByMeaning } from './searchindex.js';
-import { resetsAt, usageToday, usedToday } from './usage.js';
+import { indexRound, indexStats, markChunkStale, relevantHits, searchByMeaning } from './searchindex.js';
+import { accountUsage, hubUsedToday, resetsAt, usageToday, usedToday } from './usage.js';
 
 /** Starts the photo describer and the search indexer (every minute, and soon after new messages arrive). */
 export function startAi(bb: BlueBubbles, wa: WhatsApp, log: FastifyBaseLogger) {
@@ -41,10 +41,15 @@ export function registerAiRoutes(app: FastifyInstance) {
 
     r.get('/api/ai/status', async () => {
       if (!aiEnabled()) return { enabled: false };
-      const [used, usage, photos, search] = await Promise.all([usedToday(), usageToday(), photoStats(), indexStats()]);
+      const acc = await accountUsage();
+      const [used, hubUsed, usage, photos, search] = await Promise.all([usedToday(), hubUsedToday(), usageToday(), photoStats(), indexStats()]);
       return {
-        enabled: true, usedToday: Math.round(used), limit: config.ai.dailyNeurons, resetsAt: resetsAt().toISOString(),
-        usage, photos, search, models: config.ai.models,
+        enabled: true,
+        // usedToday: the shared account's total as the budget sees it; hubUsedToday: this hub alone.
+        owner: config.ai.owner || null, hubUsedToday: Math.round(hubUsed), usedToday: Math.round(used),
+        remaining: Math.max(0, Math.round(config.ai.dailyNeurons - used)), limit: config.ai.dailyNeurons,
+        account: { usedToday: acc.used === null ? null : Math.round(acc.used), checkedAt: acc.checkedAt, error: acc.error },
+        resetsAt: resetsAt().toISOString(), usage, photos, search, models: config.ai.models,
       };
     });
 
@@ -52,7 +57,7 @@ export function registerAiRoutes(app: FastifyInstance) {
       const text = String(req.query.q ?? '').trim();
       if (text.length < 2) return [];
       const convIds = req.query.tid ? (await threadConversations(req.query.tid)).map((c) => c.id) : undefined;
-      return searchByMeaning({ text, convIds, limit: Number(req.query.limit ?? 10) });
+      return relevantHits(await searchByMeaning({ text, convIds, limit: Number(req.query.limit ?? 10) }));
     });
 
     r.post<{ Body: { q?: string; tid?: string } }>('/api/ai/ask', async (req, reply) => {

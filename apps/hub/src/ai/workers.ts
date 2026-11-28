@@ -23,7 +23,7 @@ const EXTRAS: Record<string, Record<string, unknown>> = {
   '@cf/openai/gpt-oss-20b': { reasoning_effort: 'low' },
   '@cf/moonshotai/kimi-k2.5': { chat_template_kwargs: { thinking: false } },
   '@cf/google/gemma-4-26b-a4b-it': { chat_template_kwargs: { enable_thinking: false } },
-  '@cf/qwen/qwen3-30b-a3b-fp8': { chat_template_kwargs: { enable_thinking: false } },
+  '@cf/qwen/qwen3.8-27b': { chat_template_kwargs: { enable_thinking: false } },
 };
 
 /** Models that recently failed in a way that will repeat (paid-only, unknown): skipped until the time stored here. */
@@ -63,7 +63,8 @@ async function post(path: string, body: unknown, timeoutMs: number) {
     throw budgetError();
   }
   if (res.status === 401 || code === 10000) throw new AiError(`Cloudflare refused the API token: ${text}`, 502, 'failed');
-  if (code === 5035 || res.status === 403 || res.status === 404 || /model.*(not found|no such|unknown)|no route/i.test(message)) {
+  // 5035 paid plan only, 5028 / 410 retired ("deprecated"), 404 unknown model.
+  if (code === 5035 || code === 5028 || [403, 404, 410].includes(res.status) || /deprecated|model.*(not found|no such|unknown)|no route/i.test(message)) {
     throw new AiError(`Model unavailable: ${text}`, 502, 'model');
   }
   if (res.status === 429 || code === 3040 || res.status >= 500) throw new AiError(`Workers AI is busy: ${text}`, 503, 'busy');

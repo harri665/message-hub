@@ -20,7 +20,7 @@ export function AiSearch({ query, onOpen }: { query: string; onOpen: (tid: strin
   });
   const askQ = useMutation({ mutationFn: (q: string) => api.aiAsk(q) });
   const answered = askQ.data && askQ.variables === query ? askQ.data : null;
-  const shown = (hits.data ?? []).filter((h) => h.score >= 0.3).slice(0, 8);
+  const shown = (hits.data ?? []).slice(0, 8);
   if (query.length < 3) return null;
 
   return (

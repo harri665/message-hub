@@ -13,6 +13,9 @@ alter table attachment
   add column described_at timestamptz;
 create index attachment_describe_todo on attachment (message_id)
   where mime like 'image/%' and (description_state is null or description_state = 'error');
+-- Word search (and Claude's search_messages) finds photos by their description, the same way it finds message text.
+alter table attachment add column description_tsv tsvector generated always as (to_tsvector('simple', coalesce(description, ''))) stored;
+create index attachment_description_tsv on attachment using gin (description_tsv);
 
 -- Search by meaning: runs of consecutive messages in one chat (a few minutes of conversation), embedded together,
 -- because a single "ok" or "haha" means nothing on its own. stale = the text needs (re)building and embedding.

@@ -283,6 +283,15 @@ export async function searchByMeaning(o: { text: string; tid?: string; convIds?:
   }
 }
 
+/**
+ * The hits worth showing: close enough in absolute terms (unrelated text still scores around 0.3 to 0.4 with bge-m3)
+ * and not far behind the best one, so a vague search doesn't list every chat.
+ */
+export function relevantHits<T extends { score: number }>(hits: T[], min = 0.45, spread = 0.1): T[] {
+  const best = hits[0]?.score ?? 0;
+  return hits.filter((h) => h.score >= min && h.score >= best - spread);
+}
+
 /** Counts for the Settings page. */
 export async function indexStats() {
   const [c] = await q<{ chunks: number; embedded: number; stale: number }>(
