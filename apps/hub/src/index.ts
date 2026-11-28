@@ -7,10 +7,11 @@ import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
-import { initAuth, registerAuthRoutes } from './auth.js';
+import { initAuth, registerAuthRoutes, requireSession } from './auth.js';
 import { config } from './config.js';
 import { migrate } from './db.js';
 import { registerApiRoutes } from './routes/api.js';
+import { registerLinkRoutes } from './routes/links.js';
 import { redactUrl, registerMcp } from './mcp.js';
 import { BlueBubbles } from './sources/bluebubbles.js';
 import { WhatsApp } from './sources/whatsapp.js';
@@ -98,6 +99,10 @@ const wa = new WhatsApp(app.log);
 await initAuth(app.log);
 registerAuthRoutes(app);
 registerApiRoutes(app, bb, wa);
+app.register(async (r) => {
+  r.addHook('preHandler', requireSession);
+  registerLinkRoutes(r, bb);
+});
 registerMcp(app);
 
 // Errors that set a status on purpose carry a message meant for the user; anything else (database errors,
