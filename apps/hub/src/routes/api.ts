@@ -70,7 +70,8 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
     if (ev.type === 'message') {
       const row = await q1(
         `select ct.tid, m.body, m.service, m.from_me, coalesce(spn.name, spa.address, sh.address) as sender_name,
-                c.is_group, c.title, exists(select 1 from attachment a where a.message_id = m.id) as has_attachment
+                c.is_group, c.title, exists(select 1 from attachment a where a.message_id = m.id) as has_attachment,
+                coalesce(c.muted_until > now(), false) as muted
          from message m join conversation c on c.id = m.conversation_id
          join conversation_thread ct on ct.conversation_id = c.id
          left join handle sh on sh.id = m.sender_handle_id
@@ -160,6 +161,7 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
       return {
         tid: tid,
         isGroup,
+        muted: convs.every((c) => !!c.muted_until && new Date(c.muted_until) > new Date()),
         title: convs[0].title ?? name ?? members.map((m) => m.name ?? m.address).join(', '),
         conversations: convs.map((c) => ({
           id: c.id, network: c.network, title: c.title, lastMessageAt: c.last_message_at, unread: c.unread_count,
@@ -180,6 +182,26 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
         });
       },
     );
+
+    // Mute or unmute every chat in a thread. WhatsApp chats are muted on the WhatsApp account too (so the phone
+    // matches); iMessage has no shared mute setting the Mac can change, so those are muted in Message Hub only.
+    r.post<{ Params: { tid: string }; Body: { muted?: boolean; hours?: number | null } }>('/api/threads/:tid/mute', async (req, reply) => {
+      const convs = await threadConversations(req.params.tid);
+      if (!convs.length) return reply.code(404).send({ error: 'thread not found' });
+      const muted = !!req.body?.muted;
+      const hours = Number(req.body?.hours);
+      const until = muted && Number.isFinite(hours) && hours > 0 ? new Date(Date.now() + hours * 3_600_000) : null;
+      for (const c of convs) {
+        if (c.network === 'whatsapp') {
+          await wa.setMute(c.source_id, muted, until).catch((e) => {
+            throw Object.assign(new Error(`Couldn't change the mute setting on WhatsApp: ${e instanceof Error ? e.message : e}`), { statusCode: 502 });
+          });
+        }
+        await q('update conversation set muted_until = $2 where id = $1', [c.id, muted ? (until ?? 'infinity') : null]);
+        emitLive({ type: 'conversation-updated', conversationId: c.id });
+      }
+      return { ok: true, muted, until };
+    });
 
     r.post<{ Params: { tid: string } }>('/api/threads/:tid/read', async (req) => {
       const convs = await threadConversations(req.params.tid);

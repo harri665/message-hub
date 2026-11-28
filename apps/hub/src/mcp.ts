@@ -165,7 +165,7 @@ function buildServer(requestedBy: string) {
         const who = t.last_from_me ? 'Me: ' : t.is_group && t.last_sender_name ? `${t.last_sender_name}: ` : '';
         return [
           `${t.tid}`, t.title, t.is_group ? 'group' : 'person', `last ${fmtTime(t.last_at)}`,
-          t.unread ? `${t.unread} unread` : null, `${who}${clip(last, 140)}`,
+          t.unread ? `${t.unread} unread` : null, t.muted ? 'muted' : null, `${who}${clip(last, 140)}`,
         ].filter(Boolean).join(' | ');
       });
       const more = rows.length === a.limit ? `\nMore may exist: call again with offset=${a.offset + a.limit}.` : '';

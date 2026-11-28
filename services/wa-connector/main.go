@@ -23,6 +23,7 @@ import (
 
 	_ "github.com/lib/pq"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waCompanionReg"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
@@ -514,6 +515,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /send", a.auth(a.handleSend))
 	mux.HandleFunc("POST /send-media", a.auth(a.handleSendMedia))
 	mux.HandleFunc("POST /read", a.auth(a.handleRead))
+	mux.HandleFunc("POST /mute", a.auth(a.handleMute))
 	mux.HandleFunc("GET /media", a.auth(a.handleMedia))
 	return mux
 }
@@ -741,6 +743,50 @@ func (a *App) handleRead(w http.ResponseWriter, r *http.Request) {
 		if err := a.cli.MarkRead(r.Context(), ids, time.Now(), chat, senderJID); err != nil {
 			a.log.Warnf("mark read: %v", err)
 		}
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleMute mutes or unmutes a chat on the WhatsApp account (synced to the phone like any other device's change).
+// until is a Unix time in milliseconds; 0 with muted=true means "always".
+func (a *App) handleMute(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Chat  string `json:"chat"`
+		Muted bool   `json:"muted"`
+		Until int64  `json:"until"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Chat == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("chat is required"))
+		return
+	}
+	target, err := types.ParseJID(req.Chat)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// One-to-one chats are keyed by LID in app state once the account has migrated.
+	if target.Server == types.DefaultUserServer {
+		if lid, err := a.cli.Store.LIDs.GetLIDForPN(r.Context(), target); err == nil && !lid.IsEmpty() {
+			target = lid
+		}
+	}
+	var until *int64
+	if req.Muted && req.Until > 0 {
+		until = &req.Until
+	}
+	if err := a.cli.SendAppState(r.Context(), appstate.BuildMuteAbs(target, req.Muted, until)); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	stored := time.Time{}
+	if req.Muted {
+		stored = store.MutedForever
+		if req.Until > 0 {
+			stored = time.UnixMilli(req.Until)
+		}
+	}
+	if err := a.cli.Store.ChatSettings.PutMutedUntil(r.Context(), target, stored); err != nil {
+		a.log.Warnf("store mute: %v", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
