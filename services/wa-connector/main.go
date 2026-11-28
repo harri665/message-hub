@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -334,6 +335,7 @@ func (a *App) handleMessage(ctx context.Context, evt *events.Message, historical
 	if text == "" && media == nil {
 		return
 	}
+	link := linkPreview(m)
 	if media != nil {
 		if data, err := proto.Marshal(m); err == nil {
 			_, _ = a.db.ExecContext(ctx,
@@ -355,6 +357,9 @@ func (a *App) handleMessage(ctx context.Context, evt *events.Message, historical
 	}
 	if media != nil {
 		payload["media"] = media
+	}
+	if link != nil {
+		payload["link"] = link
 	}
 	a.emit(ctx, payload)
 }
@@ -379,6 +384,20 @@ type Media struct {
 	Size     uint64 `json:"size,omitempty"`
 	Width    uint32 `json:"width,omitempty"`
 	Height   uint32 `json:"height,omitempty"`
+}
+
+// linkPreview returns the preview WhatsApp attached to a text message with a link (its own title, description and small
+// JPEG thumbnail), or nil. The hub turns it into the link's card, so the app never has to visit the page for these.
+func linkPreview(m *waE2E.Message) map[string]any {
+	e := m.GetExtendedTextMessage()
+	if e == nil || e.GetMatchedText() == "" || (e.GetTitle() == "" && len(e.GetJPEGThumbnail()) == 0) {
+		return nil
+	}
+	out := map[string]any{"url": e.GetMatchedText(), "title": e.GetTitle(), "description": e.GetDescription()}
+	if t := e.GetJPEGThumbnail(); len(t) > 0 {
+		out["thumbnail"] = base64.StdEncoding.EncodeToString(t)
+	}
+	return out
 }
 
 // extract pulls display text, media metadata and the replied-to message id out of a message.
