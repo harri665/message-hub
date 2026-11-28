@@ -6,10 +6,41 @@ Self-hosted web app that syncs iMessage, SMS and WhatsApp from my iPhone into on
 - **WhatsApp** comes through `services/wa-connector`, a linked-device client built on whatsmeow.
 - **`apps/hub`** stores everything in Postgres, merges each person's iMessage and WhatsApp chats into one timeline, and serves the web app.
 - **`apps/web`** is the React PWA: inbox, merged conversations, search, attachments, replies, WhatsApp pairing.
+- **`apps/desktop`** is a native Linux client (C++ / Qt Quick) in the MacShell style, with notifications and a small background footprint. See [its README](apps/desktop/README.md).
+
+## Profile photos
+
+Threads show real photos in the web app and the desktop app, with initials as the fallback. A group shows its own icon. A person shows their iMessage contact photo (from the Mac's Contacts, via BlueBubbles) when they have one, and otherwise their WhatsApp profile photo. Photos are stored in Postgres (the `avatar` table, 256px WebP) and served only to signed-in clients at `/api/avatars/<thread id>?w=64|128|256&v=<version>`. The thread list carries the version (`avatar`), so a changed photo gets a new URL. Contacts are re-read hourly, iMessage group icons and WhatsApp photos are re-checked daily (WhatsApp also on photo-change events).
 
 ## Search
 
 The search box in the sidebar (Ctrl+K) finds people and messages. Every word has to appear and words match as prefixes, so `pizz` finds "pizza". Put words in quotes to find them together (`"see you"`) and put a minus in front of a word to leave it out (`dinner -work`). The iMessage and WhatsApp filters also narrow the message results. Click a result to open the conversation at that message. Inside a conversation, **Search** in the header searches just that conversation.
+
+Searches take Discord-style filters, with or without a space after the colon, and the box suggests them as you type (arrow keys pick, Enter or Tab completes):
+
+| Filter | Meaning |
+| --- | --- |
+| `from: mom`, `from: "Cole Writer"`, `from: 3035550102`, `from: me` | Sender: a name, address or phone number, matched on every service. `me` (and any names in `SELF_NAMES`, e.g. `harrison,harri665`) means messages you sent. |
+| `in: Ski Trip` | One conversation, by chat or person name (or its id, `p12`). |
+| `has: image` / `video` / `audio` (`sound`) / `file` / `link` / `sticker` / `attachment` | Repeat to require several: `has: image has: link`. |
+| `before: 2026-11-25`, `after: nov 25`, `during: 2026-11` | A day, a month, `yesterday`, `today`, `nov 25`, `11/25`. In the hub's `TIME_ZONE`. |
+| `is: unread`, `is: reply`, `service: whatsapp` | Unread incoming messages, replies, one service (`imessage`, `sms`, `rcs`, `whatsapp`). |
+
+Everything else is searched as words, and the words can be left out (`has: image in: Mom`). Unknown operators and values it can't read stay in the text. The MCP `search_messages` tool understands the same filters. There is no `mentions:` because mentions are not stored.
+
+## Emoji shortcodes
+
+In the composer (web and desktop), typing `:` and two letters (`:smi`) opens a list of matching emoji above the cursor. Arrow keys pick, Enter or Tab inserts, Esc closes, and a finished `:smile:` turns into the emoji straight away. It only starts at the beginning of the text or after a space, so `http://x:80` is left alone, and it does nothing inside backticks. The names are the ones GitHub, Discord and Slack use. The list comes from [emojibase-data](https://github.com/milesj/emojibase) (MIT, notice in `apps/web/src/emoji/LICENSE-emojibase.txt`), regenerated with `node tools/gen-emoji.mjs <path to node_modules/emojibase-data>` into both apps.
+
+## Pinned messages
+
+Right-click (desktop) or use **Pin** on a message (web) to pin it. Pins are private to the hub: nothing is sent to the phone, iMessage or WhatsApp, and other people never see them (iOS 26 message pins never reach the Mac VM, and pinning in WhatsApp would post a notice to the chat, so the hub keeps its own). A pin is a `pinned_at` timestamp on the message (migration 006). `POST /api/messages/:id/pin` and `/unpin` set it (signed-in sessions only) and send a live `message-updated` event, so other open clients update. `GET /api/threads/:tid` lists the thread's `pins`, newest pin first (`id`, `text` preview, `sender`, `sentAt`, `fromMe`, `hasAttachment`). Unsent messages drop out of the pins. A thread with pins shows a Pinned bar under the header: click it to step through the pins (older pages are loaded if needed, and the message is highlighted), or Unpin from it. Claude's `read_conversation` marks pinned messages with "(pinned)" and cannot change pins.
+
+## Archived chats
+
+**Archive** (web: the header button or right-click a chat; desktop: right-click a chat) moves a chat out of the list into an **Archived (n)** row at the top of the list, which opens the archived chats with a way back. `POST /api/threads/:tid/archive` and `/unarchive` apply to every chat merged into the thread (a person's iMessage and WhatsApp chats together). A thread counts as archived only when all its chats are, and a new message does not un-archive it (like WhatsApp's "keep chats archived"). `GET /api/threads?archived=1` lists archived threads; the normal list is unchanged apart from an `archived` flag, and its `x-archived-count` / `x-archived-unread` headers (also `GET /api/threads/archived-summary` as `archivedCount` and `archivedUnread`) feed the Archived row. Archived threads add nothing to unread counts and badges and never notify (the live `message` preview carries `archived`, like `muted`). Search still finds messages in archived chats. A live `conversation-updated` event refreshes other clients. No migration was needed: it uses the `conversation.archived` column.
+
+WhatsApp: archive state is private to the account and syncs both ways, like mute. Archiving in the hub sends an archive change to the account through the connector (`POST /archive` builds `appstate.BuildArchive` with the chat's last message, then `SendAppState`), so the phone matches; if WhatsApp refuses, nothing changes and the app shows the error. Archiving or unarchiving on the phone reaches the hub as a whatsmeow `events.Archive` (the connector turns it into a hub event, including the ones from the full app-state sync after linking), and the hub also re-reads whatsmeow's stored archive flags every minute as a safety net. Chats WhatsApp has no stored setting for keep the hub's state. iMessage has no archive the Mac can read or change, so those chats are archived in Message Hub only (BlueBubbles' own `isArchived` is ignored).
 
 ## Claude (MCP)
 

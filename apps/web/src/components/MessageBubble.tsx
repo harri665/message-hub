@@ -3,8 +3,15 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { Attachment, Message } from '../api.ts';
 import { api, SERVICE_LABEL } from '../api.ts';
 import { clock, fileSize, fullTime, serviceClass } from '../format.ts';
+import { LinkCard, useLinkPreview } from './LinkPreview.tsx';
 
 const URL_RE = /(https?:\/\/[^\s<]+[^\s<.,:;"')\]])/g;
+
+/** A long link is shown shortened ("example.com/some/long/pa..."); the whole address stays in the href and tooltip. */
+function shortLink(url: string) {
+  const t = url.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
+  return t.length > 48 ? `${t.slice(0, 46)}…` : t;
+}
 
 function Linkified({ text }: { text: string }) {
   const parts = text.split(URL_RE);
@@ -12,7 +19,7 @@ function Linkified({ text }: { text: string }) {
     <>
       {parts.map((p, i) =>
         i % 2 === 1 ? (
-          <a key={i} href={p} target="_blank" rel="noreferrer noopener">{p}</a>
+          <a key={i} href={p} target="_blank" rel="noreferrer noopener" title={p}>{shortLink(p)}</a>
         ) : (
           p
         ),
@@ -69,6 +76,16 @@ function AttachmentView({ a, onOpenImage }: { a: Attachment; onOpenImage: (src: 
       <span className="att-name">{a.filename ?? 'File'}</span>
       <span className="att-size">{fileSize(a.size)}</span>
     </a>
+  );
+}
+
+/** A map-pin style glyph, drawn here so it follows the text colour. */
+export function PinGlyph({ className, title }: { className?: string; title?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" width="12" height="12" role="img" aria-label={title} fill="currentColor">
+      {title && <title>{title}</title>}
+      <path d="M5 1.5h6l-.7 1.2v3.3l2 2.3v1H8.8V14L8 15l-.8-1V9.3H3v-1l2-2.3V2.7z" />
+    </svg>
   );
 }
 
@@ -139,9 +156,9 @@ function ReactionPicker({ m, choices, onClose }: { m: Message; choices: string[]
 }
 
 export function MessageBubble({
-  m, isGroup, firstInRun, lastInRun, showStatus, highlighted, onReply, onOpenImage, reactionChoices,
+  m, isGroup, firstInRun, lastInRun, showStatus, highlighted, onReply, onTogglePin, onOpenImage, reactionChoices,
 }: {
-  m: Message; isGroup: boolean; firstInRun: boolean; lastInRun: boolean; showStatus: boolean; highlighted?: boolean; onReply: () => void;
+  m: Message; isGroup: boolean; firstInRun: boolean; lastInRun: boolean; showStatus: boolean; highlighted?: boolean; onReply: () => void; onTogglePin: () => void;
   onOpenImage: (src: string) => void;
   /** Reactions this message's service can send; none while they're loading. */
   reactionChoices?: string[];
@@ -155,10 +172,13 @@ export function MessageBubble({
     );
   }
   const side = m.from_me ? 'out' : 'in';
-  const hasText = !!m.body && !m.unsent;
+  // A link with a preview shows as a card; the text bubble keeps only the words around it.
+  const card = useLinkPreview(m);
+  const text = card ? card.rest : m.body;
+  const hasText = !!text && !m.unsent;
   return (
     <div
-      className={`msg ${side} ${serviceClass(m.service)} ${firstInRun ? 'first' : ''} ${lastInRun ? 'last' : ''} ${highlighted ? 'hit' : ''}`}
+      className={`msg ${side} ${serviceClass(m.service)} ${firstInRun ? 'first' : ''} ${lastInRun ? 'last' : ''} ${highlighted ? 'hit' : ''} ${m.pinned_at ? 'pinned' : ''}`}
       data-mid={m.id}
     >
       {isGroup && !m.from_me && firstInRun && <span className="msg-sender">{m.sender_name}</span>}
@@ -173,13 +193,15 @@ export function MessageBubble({
           {m.attachments.map((a) => (
             <AttachmentView key={a.id} a={a} onOpenImage={onOpenImage} />
           ))}
+          {m.pinned_at && !m.unsent && <PinGlyph className="pin-mark" title="Pinned" />}
           {m.unsent && <div className="bubble unsent">Message unsent</div>}
           {hasText && (
             <div className="bubble">
-              <Linkified text={m.body!} />
+              <Linkified text={text!} />
               {m.edited_at && <span className="edited"> (edited)</span>}
             </div>
           )}
+          {card && <LinkCard p={card} />}
           {m.reactions.length > 0 && (
             <div className="reactions glass" aria-label="Reactions">
               {m.reactions.map((r, i) => (
@@ -195,6 +217,11 @@ export function MessageBubble({
             <button className="msg-action" onClick={() => setPicking((p) => !p)} aria-expanded={picking} aria-label="React">React</button>
           )}
           <button className="msg-action" onClick={onReply} aria-label="Reply">Reply</button>
+          {!m.unsent && (
+            <button className="msg-action" onClick={onTogglePin} aria-label={m.pinned_at ? 'Unpin' : 'Pin'}>
+              {m.pinned_at ? 'Unpin' : 'Pin'}
+            </button>
+          )}
           {picking && reactionChoices && <ReactionPicker m={m} choices={reactionChoices} onClose={() => setPicking(false)} />}
         </div>
       </div>

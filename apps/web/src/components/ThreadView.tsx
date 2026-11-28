@@ -1,9 +1,10 @@
 import { Fragment, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, SERVICE_LABEL, type Message, type MessagePage, type Service } from '../api.ts';
-import { dayLabel, initials, listTime, sameDay, serviceClass } from '../format.ts';
+import { dayLabel, listTime, sameDay, serviceClass } from '../format.ts';
+import { Avatar } from './Avatar.tsx';
 import { Highlight } from './Highlight.tsx';
-import { MessageBubble } from './MessageBubble.tsx';
+import { MessageBubble, PinGlyph } from './MessageBubble.tsx';
 import { Composer } from './Composer.tsx';
 import { useTyping } from '../stores.ts';
 
@@ -124,6 +125,43 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
   const reactionSets = useQuery({ queryKey: ['reactions'], queryFn: api.reactions, staleTime: Infinity });
   const typists = useTyping()[tid] ?? [];
   const t = thread.data;
+  const pins = t?.pins ?? [];
+
+  const togglePin = useCallback(
+    async (m: Message) => {
+      try {
+        await (m.pinned_at ? api.unpin(m.id) : api.pin(m.id));
+      } catch {
+        /* the next refresh shows the real state */
+      }
+      qc.invalidateQueries({ queryKey: ['messages', tid] });
+      qc.invalidateQueries({ queryKey: ['thread', tid] });
+    },
+    [qc, tid],
+  );
+
+  // The pinned bar shows one pin at a time; clicking it moves to the next and brings that message into view.
+  const [pinIndex, setPinIndex] = useState(0);
+  const pinShown = pins.length ? Math.min(pinIndex, pins.length - 1) : 0;
+  useEffect(() => setPinIndex(0), [tid]);
+  const showPin = useCallback(
+    (index: number) => {
+      const pin = pins[index];
+      if (!pin) return;
+      setPinIndex(index);
+      const el = scrollRef.current?.querySelector<HTMLElement>(`[data-mid="${pin.id}"]`);
+      if (el) {
+        // Already loaded: scroll to it. Otherwise open the conversation around it (which loads older pages as needed).
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        setFlash(null);
+        requestAnimationFrame(() => setFlash(pin.id));
+        setTimeout(() => setFlash((f) => (f === pin.id ? null : f)), 2200);
+      } else {
+        onFocus(pin.id);
+      }
+    },
+    [pins, onFocus],
+  );
   const services = Array.from(new Set(t?.conversations.map((c) => c.lastService) ?? []));
   const lastFromMeId = [...list].reverse().find((m) => m.from_me && m.kind === 'text')?.id;
 
@@ -138,7 +176,7 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
 
   return (
     <section className="thread" ref={rootRef} aria-label={t?.title ?? 'Conversation'}>
-      <div className="messages" ref={scrollRef} onScroll={onScroll}>
+      <div className={`messages ${pins.length ? 'has-pins' : ''}`} ref={scrollRef} onScroll={onScroll}>
         <div className="messages-inner">
           {messages.isFetchingNextPage && <p className="list-note center">Loading older messages</p>}
           {!messages.hasNextPage && list.length > 0 && <p className="list-note center">Start of conversation</p>}
@@ -167,6 +205,7 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
                   lastInRun={!grouped(m, next) || (!!next && !sameDay(m.sent_at, next.sent_at))}
                   showStatus={m.id === lastFromMeId && !pending.length}
                   onReply={() => setReplyTo(m)}
+                  onTogglePin={() => togglePin(m)}
                   onOpenImage={setLightbox}
                   reactionChoices={reactionSets.data?.[t?.conversations.find((c) => c.id === m.conversation_id)?.network ?? (m.service === 'whatsapp' ? 'whatsapp' : 'apple')]}
                 />
@@ -218,7 +257,7 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
 
       <header className="thread-head glass">
         <button className="pill-btn back" onClick={onBack}>Back</button>
-        <span className={`avatar small ${t?.isGroup ? 'group' : ''}`} aria-hidden="true">{initials(t?.title ?? '')}</span>
+        <Avatar tid={tid} title={t?.title ?? ''} isGroup={!!t?.isGroup} version={t?.avatar} small />
         <div className="thread-head-main">
           <h2>{t?.title ?? ''}</h2>
           <p className="thread-head-sub">
@@ -231,11 +270,28 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
             {t?.isGroup && t.members.length > 0 && <span> with {t.members.length} people</span>}
           </p>
         </div>
+        {t && <ArchiveControl tid={tid} archived={t.archived} hasWhatsApp={t.conversations.some((c) => c.network === 'whatsapp')} />}
         {t && <MuteControl tid={tid} muted={t.muted} hasWhatsApp={t.conversations.some((c) => c.network === 'whatsapp')} />}
         <button className="pill-btn" onClick={() => setFindOpen((o) => !o)} aria-expanded={findOpen}>
           {findOpen ? 'Done' : 'Search'}
         </button>
       </header>
+
+      {pins.length > 0 && (
+        <div className="pin-bar glass" role="region" aria-label="Pinned messages">
+          <PinGlyph className="pin-bar-icon" />
+          <button className="pin-bar-main" onClick={() => showPin((pinShown + 1) % pins.length)} title={pins.length > 1 ? 'Show the next pinned message' : 'Show the pinned message'}>
+            <span className="pin-bar-label">
+              Pinned{pins.length > 1 ? ` ${pinShown + 1} of ${pins.length}` : ''}
+              <span className="pin-bar-who"> {pins[pinShown].sender ?? 'You'}, {listTime(pins[pinShown].sentAt)}</span>
+            </span>
+            <span className="pin-bar-text">{pins[pinShown].text || (pins[pinShown].hasAttachment ? 'Attachment' : 'Message')}</span>
+          </button>
+          <button className="pill-btn pin-bar-unpin" onClick={() => api.unpin(pins[pinShown].id).then(() => { qc.invalidateQueries({ queryKey: ['thread', tid] }); qc.invalidateQueries({ queryKey: ['messages', tid] }); })} aria-label="Unpin this message">
+            Unpin
+          </button>
+        </div>
+      )}
 
       {findOpen && <FindInThread tid={tid} onPick={(id) => onFocus(id)} onClose={() => setFindOpen(false)} />}
 
@@ -305,6 +361,35 @@ function FindInThread({ tid, onPick, onClose }: { tid: string; onPick: (id: numb
         </div>
       )}
     </div>
+  );
+}
+
+/** Archive or unarchive this conversation. New messages never un-archive it. WhatsApp chats change on the account too. */
+function ArchiveControl({ tid, archived, hasWhatsApp }: { tid: string; archived: boolean; hasWhatsApp: boolean }) {
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const toggle = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.archive(tid, !archived);
+      await Promise.all([qc.invalidateQueries({ queryKey: ['thread', tid] }), qc.invalidateQueries({ queryKey: ['threads'] })]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not change the archive setting');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      className="pill-btn"
+      disabled={busy}
+      onClick={toggle}
+      title={error ?? (hasWhatsApp ? 'Also archives it in WhatsApp on your phone.' : 'Archived chats move out of the list and stay quiet.')}
+    >
+      {archived ? (busy ? 'Unarchiving' : 'Unarchive') : busy ? 'Archiving' : 'Archive'}
+    </button>
   );
 }
 

@@ -9,11 +9,13 @@ import (
 	"context"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -26,6 +28,7 @@ import (
 	_ "github.com/lib/pq"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waCompanionReg"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
@@ -229,6 +232,19 @@ func (a *App) handleEvent(raw any) {
 		}
 	case *events.ChatPresence:
 		a.handleChatPresence(ctx, evt)
+	case *events.Archive:
+		// Archived or unarchived on the phone or another device (or reported by the full app-state sync).
+		if evt.Action == nil || evt.JID.Server == types.BroadcastServer || evt.JID.Server == types.NewsletterServer {
+			break
+		}
+		chat := evt.JID.ToNonAD()
+		if chat.Server == types.HiddenUserServer {
+			chat = a.toPN(ctx, chat, types.EmptyJID)
+		}
+		a.emit(ctx, map[string]any{"type": "archive", "chat": chat.String(), "archived": evt.Action.GetArchived(), "fromFullSync": evt.FromFullSync})
+	case *events.Picture:
+		// A contact or group changed (or removed) its photo: tell the hub to fetch it again.
+		a.emit(ctx, map[string]any{"type": "picture", "address": a.address(ctx, evt.JID, types.EmptyJID), "chat": evt.JID.String()})
 	case *events.Connected:
 		a.log.Infof("connected to WhatsApp")
 		a.restorePresence()
@@ -339,6 +355,7 @@ func (a *App) handleMessage(ctx context.Context, evt *events.Message, historical
 	if text == "" && media == nil {
 		return
 	}
+	link := linkPreview(m)
 	if media != nil {
 		if data, err := proto.Marshal(m); err == nil {
 			_, _ = a.db.ExecContext(ctx,
@@ -360,6 +377,9 @@ func (a *App) handleMessage(ctx context.Context, evt *events.Message, historical
 	}
 	if media != nil {
 		payload["media"] = media
+	}
+	if link != nil {
+		payload["link"] = link
 	}
 	a.emit(ctx, payload)
 }
@@ -384,6 +404,20 @@ type Media struct {
 	Size     uint64 `json:"size,omitempty"`
 	Width    uint32 `json:"width,omitempty"`
 	Height   uint32 `json:"height,omitempty"`
+}
+
+// linkPreview returns the preview WhatsApp attached to a text message with a link (its own title, description and small
+// JPEG thumbnail), or nil. The hub turns it into the link's card, so the app never has to visit the page for these.
+func linkPreview(m *waE2E.Message) map[string]any {
+	e := m.GetExtendedTextMessage()
+	if e == nil || e.GetMatchedText() == "" || (e.GetTitle() == "" && len(e.GetJPEGThumbnail()) == 0) {
+		return nil
+	}
+	out := map[string]any{"url": e.GetMatchedText(), "title": e.GetTitle(), "description": e.GetDescription()}
+	if t := e.GetJPEGThumbnail(); len(t) > 0 {
+		out["thumbnail"] = base64.StdEncoding.EncodeToString(t)
+	}
+	return out
 }
 
 // extract pulls display text, media metadata and the replied-to message id out of a message.
@@ -525,7 +559,9 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /send-media", a.auth(a.linked(a.handleSendMedia)))
 	mux.HandleFunc("POST /read", a.auth(a.linked(a.handleRead)))
 	mux.HandleFunc("POST /mute", a.auth(a.linked(a.handleMute)))
+	mux.HandleFunc("POST /archive", a.auth(a.linked(a.handleArchive)))
 	mux.HandleFunc("GET /media", a.auth(a.handleMedia))
+	mux.HandleFunc("GET /avatar", a.auth(a.handleAvatar))
 	mux.HandleFunc("POST /react", a.auth(a.linked(a.handleReact)))
 	mux.HandleFunc("POST /typing", a.auth(a.linked(a.handleTyping)))
 	mux.HandleFunc("POST /presence", a.auth(a.handlePresence))
@@ -830,6 +866,49 @@ func (a *App) handleMute(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleArchive archives or unarchives a chat on the WhatsApp account (synced to the phone like any other device's
+// change). The last message's id, sender and time go along so WhatsApp knows which messages the change covers.
+func (a *App) handleArchive(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Chat          string `json:"chat"`
+		Archived      bool   `json:"archived"`
+		LastID        string `json:"lastId"`
+		LastFromMe    bool   `json:"lastFromMe"`
+		LastTimestamp int64  `json:"lastTimestamp"` // Unix milliseconds
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Chat == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("chat is required"))
+		return
+	}
+	target, err := types.ParseJID(req.Chat)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// One-to-one chats are keyed by LID in app state once the account has migrated.
+	if target.Server == types.DefaultUserServer {
+		if lid, err := a.cli.Store.LIDs.GetLIDForPN(r.Context(), target); err == nil && !lid.IsEmpty() {
+			target = lid
+		}
+	}
+	var last time.Time
+	var key *waCommon.MessageKey
+	if req.LastTimestamp > 0 {
+		last = time.UnixMilli(req.LastTimestamp)
+	}
+	if req.LastID != "" {
+		key = &waCommon.MessageKey{RemoteJID: proto.String(target.String()), FromMe: proto.Bool(req.LastFromMe), ID: proto.String(req.LastID)}
+	}
+	if err := a.cli.SendAppState(r.Context(), appstate.BuildArchive(target, req.Archived, last, key)); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	if err := a.cli.Store.ChatSettings.PutArchived(r.Context(), target, req.Archived); err != nil {
+		a.log.Warnf("store archive: %v", err)
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (a *App) handleMedia(w http.ResponseWriter, r *http.Request) {
 	chat, id := r.URL.Query().Get("chat"), r.URL.Query().Get("id")
 	var raw []byte
@@ -868,6 +947,57 @@ func (a *App) handleMedia(w http.ResponseWriter, r *http.Request) {
 		mime = http.DetectContentType(data)
 	}
 	w.Header().Set("Content-Type", mime)
+	_, _ = w.Write(data)
+}
+
+// handleAvatar returns the current profile photo of a contact (jid is a hub address like "+15551234567") or a group
+// (jid like "123@g.us"). The photo's id comes back in X-Picture-Id; when have= matches the current id the answer is
+// 304 with no body, and 404 means no photo (or one hidden from us).
+func (a *App) handleAvatar(w http.ResponseWriter, r *http.Request) {
+	jid, err := jidFromAddress(r.URL.Query().Get("jid"))
+	if err != nil || jid.IsEmpty() {
+		writeErr(w, http.StatusBadRequest, errors.New("jid is required"))
+		return
+	}
+	if !a.cli.IsConnected() {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("not connected"))
+		return
+	}
+	info, err := a.cli.GetProfilePictureInfo(r.Context(), jid.ToNonAD(), &whatsmeow.GetProfilePictureParams{ExistingID: r.URL.Query().Get("have")})
+	switch {
+	case errors.Is(err, whatsmeow.ErrProfilePictureNotSet), errors.Is(err, whatsmeow.ErrProfilePictureUnauthorized):
+		writeErr(w, http.StatusNotFound, errors.New("no profile picture"))
+		return
+	case err != nil:
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	case info == nil:
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	u, err := url.Parse(info.URL)
+	if err != nil || u.Scheme != "https" {
+		writeErr(w, http.StatusBadGateway, errors.New("unexpected picture URL"))
+		return
+	}
+	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, info.URL, nil)
+	res, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("picture download: %s", res.Status))
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	w.Header().Set("X-Picture-Id", info.ID)
+	w.Header().Set("Content-Type", http.DetectContentType(data))
 	_, _ = w.Write(data)
 }
 

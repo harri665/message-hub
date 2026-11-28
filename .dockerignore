@@ -3,3 +3,4 @@
 **/.env
 .git
 data
+apps/desktop

@@ -1,9 +1,11 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, SERVICE_LABEL, type MessagePage, type ThreadSummary } from '../api.ts';
-import { initials, listTime, serviceClass } from '../format.ts';
+import { listTime, serviceClass } from '../format.ts';
+import { Avatar } from './Avatar.tsx';
 import { Highlight } from './Highlight.tsx';
 import { useDrafts, useTyping } from '../stores.ts';
+import { allOperators, complete, freeText, type Completion, type Suggestion } from '../searchSuggest.ts';
 
 type Filter = 'all' | 'unread' | 'apple' | 'whatsapp';
 const FILTERS: { key: Filter; label: string }[] = [
@@ -52,7 +54,34 @@ export function Sidebar({ activeTid, composing, onOpen, onNew, onSettings }: {
   const qc = useQueryClient();
   const drafts = useDrafts();
   const typing = useTyping();
-  const threads = useQuery({ queryKey: ['threads'], queryFn: api.threads, refetchInterval: 60_000 });
+  // The inbox, or the archived list (opened from the Archived row; the back button returns).
+  const [showArchived, setShowArchived] = useState(false);
+  const threads = useQuery({ queryKey: ['threads', showArchived ? 'archived' : 'inbox'], queryFn: () => api.threads(showArchived), refetchInterval: 60_000 });
+  const archivedInfo = useQuery({ queryKey: ['threads', 'archived-summary'], queryFn: api.archivedSummary, refetchInterval: 60_000 });
+  const archivedCount = archivedInfo.data?.archivedCount ?? 0;
+  const archivedUnread = archivedInfo.data?.archivedUnread ?? 0;
+  const [menu, setMenu] = useState<{ tid: string; x: number; y: number; archived: boolean } | null>(null);
+  const [toast, setToast] = useState<{ tid: string; archived: boolean } | null>(null);
+  const setArchived = async (tid: string, archived: boolean) => {
+    setMenu(null);
+    try {
+      await api.archive(tid, archived);
+      setToast({ tid, archived });
+      setTimeout(() => setToast((t) => (t?.tid === tid ? null : t)), 6000);
+    } catch (e) {
+      setToast(null);
+      alert(e instanceof Error ? e.message : 'Could not change the archive setting');
+    }
+    qc.invalidateQueries({ queryKey: ['threads'] });
+    qc.invalidateQueries({ queryKey: ['thread', tid] });
+  };
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    window.addEventListener('click', close);
+    window.addEventListener('keydown', close);
+    return () => { window.removeEventListener('click', close); window.removeEventListener('keydown', close); };
+  }, [menu]);
   // Pointing at a conversation starts loading it, so it's usually ready by the time it's clicked.
   const prefetch = (tid: string) => {
     qc.prefetchQuery({ queryKey: ['thread', tid], queryFn: () => api.thread(tid) });
@@ -68,6 +97,26 @@ export function Sidebar({ activeTid, composing, onOpen, onNew, onSettings }: {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const searchRef = useRef<HTMLInputElement>(null);
+  // Suggestions for "from:", "has:" and the other filters, shown under the box while it has focus.
+  const [caret, setCaret] = useState(0);
+  const [focused, setFocused] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const [active, setActive] = useState(0);
+  const completion: Completion | null = useMemo(
+    () => (!focused || dismissed ? null : query ? complete(query, caret, threads.data ?? []) : allOperators()),
+    [focused, dismissed, query, caret, threads.data],
+  );
+  const choices = completion?.items.filter((i) => !i.info) ?? [];
+  useEffect(() => setActive(0), [completion?.start, completion?.items.length, query]);
+  const apply = (item: Suggestion) => {
+    if (!completion) return;
+    const next = query.slice(0, completion.start) + item.insert + query.slice(completion.end);
+    const at = completion.start + item.insert.length;
+    setQuery(next);
+    setCaret(at);
+    setDismissed(false);
+    requestAnimationFrame(() => searchRef.current?.setSelectionRange(at, at));
+  };
   const deferred = useDeferredValue(query.trim());
   const searchService = filter === 'apple' || filter === 'whatsapp' ? filter : '';
   const search = useInfiniteQuery({
@@ -102,7 +151,10 @@ export function Sidebar({ activeTid, composing, onOpen, onNew, onSettings }: {
     if (filter === 'unread') list = list.filter((t) => t.unread > 0);
     else if (filter !== 'all') list = list.filter((t) => t.networks.includes(filter));
     if (deferred) {
-      const needle = deferred.toLowerCase();
+      // "from: mom pizza" narrows the people list by "pizza" only, and by nothing but the words when there are none.
+      const { text, hasFilters } = freeText(deferred);
+      if (hasFilters && !text) return [];
+      const needle = text.toLowerCase();
       list = list.filter((t) => t.title.toLowerCase().includes(needle));
     }
     return list;
@@ -123,23 +175,75 @@ export function Sidebar({ activeTid, composing, onOpen, onNew, onSettings }: {
   return (
     <aside className="sidebar glass">
       <header className="sidebar-head">
-        <h1>Messages</h1>
+        {showArchived ? (
+          <button className="pill-btn" onClick={() => setShowArchived(false)} aria-label="Back to all conversations">Back</button>
+        ) : null}
+        <h1>{showArchived ? 'Archived' : 'Messages'}</h1>
         <div className="sidebar-actions">
           <button className="pill-btn" onClick={onSettings}>Settings</button>
           <button className="pill-btn primary" onClick={onNew} aria-pressed={composing} title="New message (Ctrl+Alt+N)">New</button>
         </div>
       </header>
       <div className="sidebar-tools">
+        <div className="search-wrap">
         <input
           ref={searchRef}
           className="search-field"
           type="search"
           placeholder="Search people and messages (Ctrl+K)"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === 'Escape' && setQuery('')}
+          onChange={(e) => { setQuery(e.target.value); setCaret(e.target.selectionStart ?? e.target.value.length); setDismissed(false); }}
+          onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
+          onFocus={() => { setFocused(true); setDismissed(false); }}
+          onBlur={() => setFocused(false)}
+          onKeyDown={(e) => {
+            if (completion && choices.length && !e.nativeEvent.isComposing) {
+              if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                setActive((i) => (i + (e.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length);
+                return;
+              }
+              if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault();
+                apply(choices[active] ?? choices[0]);
+                return;
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                setDismissed(true);
+                return;
+              }
+            }
+            if (e.key === 'Escape') setQuery('');
+          }}
+          role="combobox"
+          aria-expanded={!!completion}
+          aria-autocomplete="list"
+          aria-controls="search-suggestions"
           aria-label="Search people and messages"
+          autoComplete="off"
         />
+        {completion && (
+          <ul id="search-suggestions" className="search-suggest glass" role="listbox">
+            {completion.items.map((item) => {
+              const idx = choices.indexOf(item);
+              return (
+                <li
+                  key={item.label + item.insert}
+                  role={item.info ? undefined : 'option'}
+                  aria-selected={idx === active}
+                  className={`${item.info ? 'info' : ''} ${idx === active ? 'active' : ''}`}
+                  onMouseDown={(e) => { e.preventDefault(); if (!item.info) apply(item); }}
+                  onMouseEnter={() => idx >= 0 && setActive(idx)}
+                >
+                  <span className="suggest-label">{item.label}</span>
+                  {item.hint && <span className="suggest-hint">{item.hint}</span>}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        </div>
         <div className="segmented" role="group" aria-label="Show">
           {FILTERS.map((f) => (
             <button key={f.key} aria-pressed={filter === f.key} onClick={() => setFilter(f.key)}>
@@ -157,7 +261,16 @@ export function Sidebar({ activeTid, composing, onOpen, onNew, onSettings }: {
         {threads.isPending && <p className="list-note">Loading conversations</p>}
         {threads.isError && <p className="list-note">Could not load conversations. {threads.error.message}</p>}
         {threads.data && !threads.data.length && (
-          <p className="list-note">No conversations yet. Connect iMessage or link WhatsApp in Settings.</p>
+          <p className="list-note">{showArchived ? 'No archived conversations.' : 'No conversations yet. Connect iMessage or link WhatsApp in Settings.'}</p>
+        )}
+        {!showArchived && archivedCount > 0 && !deferred && (
+          <button className="thread-row archived-row" onClick={() => setShowArchived(true)}>
+            <span className="archived-label">Archived</span>
+            <span className="thread-badges">
+              {archivedUnread > 0 && <span className="muted-tag">{archivedUnread} unread</span>}
+              <span className="muted-tag">{archivedCount}</span>
+            </span>
+          </button>
         )}
         {threads.data && threads.data.length > 0 && !filtered.length && !deferred && (
           <p className="list-note">{filter === 'unread' ? "You're all caught up." : 'No conversations here.'}</p>
@@ -167,11 +280,12 @@ export function Sidebar({ activeTid, composing, onOpen, onNew, onSettings }: {
             key={t.tid}
             className={`thread-row ${t.tid === activeTid ? 'active' : ''} ${t.unread ? 'unread' : ''} ${t.muted ? 'muted' : ''}`}
             onClick={() => onOpen(t.tid)}
+            onContextMenu={(e) => { e.preventDefault(); setMenu({ tid: t.tid, x: e.clientX, y: e.clientY, archived: showArchived }); }}
             onPointerEnter={() => prefetch(t.tid)}
             onFocus={() => prefetch(t.tid)}
             aria-current={t.tid === activeTid ? 'page' : undefined}
           >
-            <span className={`avatar ${t.is_group ? 'group' : ''}`} aria-hidden="true">{initials(t.title)}</span>
+            <Avatar tid={t.tid} title={t.title} isGroup={t.is_group} version={t.avatar} />
             <span className="thread-main">
               <span className="thread-top">
                 <span className="thread-title">{t.title}</span>
@@ -217,6 +331,17 @@ export function Sidebar({ activeTid, composing, onOpen, onNew, onSettings }: {
           </section>
         )}
       </nav>
+      {menu && (
+        <div className="mute-menu glass ctx-menu" role="menu" style={{ left: menu.x, top: menu.y }}>
+          <button role="menuitem" onClick={() => setArchived(menu.tid, !menu.archived)}>{menu.archived ? 'Unarchive' : 'Archive'}</button>
+        </div>
+      )}
+      {toast && (
+        <div className="toast glass" role="status">
+          <span>{toast.archived ? 'Chat archived' : 'Chat unarchived'}</span>
+          <button className="pill-btn" onClick={() => setArchived(toast.tid, !toast.archived)}>Undo</button>
+        </div>
+      )}
     </aside>
   );
 }

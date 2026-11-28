@@ -1,15 +1,18 @@
 // Read queries shared by the web API and the MCP server.
 import { cached } from './cache.js';
+import { THREAD_AVATAR_SQL } from './avatars.js';
+import { config } from './config.js';
 import { q, q1 } from './db.js';
+import { hasFilters, likePattern, parseSearch, type HasValue } from './searchquery.js';
 
 export interface ConvRow {
   id: number; network: 'apple' | 'whatsapp'; source_id: string; title: string | null; is_group: boolean;
-  last_message_at: string | null; unread_count: number; muted_until: string | null;
+  last_message_at: string | null; unread_count: number; muted_until: string | null; archived: boolean;
 }
 
 export const MESSAGE_COLUMNS = `
   m.id, m.conversation_id, m.service, m.from_me, m.kind, m.body, m.sent_at, m.delivered_at, m.read_at, m.edited_at,
-  m.unsent, m.status,
+  m.unsent, m.status, m.pinned_at,
   sh.person_id as sender_person_id,
   coalesce(spn.name, spa.address, sh.address) as sender_name,
   coalesce((select json_agg(json_build_object('id', a.id, 'mime', a.mime, 'filename', a.filename, 'size', a.size,
@@ -55,7 +58,7 @@ async function loadThreadConversations(tid: string): Promise<ConvRow[]> {
 
 // ---------- inbox ----------
 
-export interface ThreadFilter { limit?: number; offset?: number; unreadOnly?: boolean; match?: string; tid?: string }
+export interface ThreadFilter { limit?: number; offset?: number; unreadOnly?: boolean; match?: string; tid?: string; archived?: boolean }
 
 /**
  * Threads newest first. `match` keeps threads whose name, member names or addresses contain the text.
@@ -66,7 +69,7 @@ export function listThreads(f: ThreadFilter = {}) {
   const limit = Math.min(f.limit ?? 100, 500);
   const match = f.match?.trim() ? `%${f.match.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
   const digits = f.match?.replace(/\D/g, '') ?? '';
-  const args = [limit, f.offset ?? 0, !!f.unreadOnly, match, digits, f.tid ?? null];
+  const args = [limit, f.offset ?? 0, !!f.unreadOnly, match, digits, f.tid ?? null, !!f.archived];
   return cached(`threads:${JSON.stringify(args)}`, () => q(THREADS_SQL, args));
 }
 
@@ -85,11 +88,13 @@ const THREADS_SQL = `
                   max(c.title) filter (where c.is_group) as group_title,
                   -- A thread is muted when every chat in it is (a person's iMessage and WhatsApp chats can differ).
                   bool_and(coalesce(c.muted_until > now(), false)) as muted,
-                  min(c.muted_until) filter (where c.muted_until > now()) as muted_until
+                  min(c.muted_until) filter (where c.muted_until > now()) as muted_until,
+                  -- Archived only when every chat in it is. A new message never un-archives it.
+                  bool_and(c.archived) as archived
            from conversation c join ct on ct.conversation_id = c.id
-           where not c.archived
            group by ct.tid
            having max(c.last_message_at) is not null
+              and ($6::text is not null or bool_and(c.archived) = $7)
          ),
          gm as (
            select t.tid, string_agg(coalesce(mpn.name, mpa.address, h.address), ', ') as names
@@ -125,7 +130,8 @@ const THREADS_SQL = `
            order by n.last_at desc
            limit $1 offset $2
          )
-    select p.tid, p.is_group, p.last_at, p.unread, p.conversation_ids, p.networks, p.title, p.muted, p.muted_until,
+    select p.tid, p.is_group, p.last_at, p.unread, p.conversation_ids, p.networks, p.title, p.muted, p.muted_until, p.archived,
+           ${THREAD_AVATAR_SQL('p.person_id', 'p.conversation_ids[1]')} as avatar,
            lm.body as last_body, lm.from_me as last_from_me, lm.service as last_service, lm.kind as last_kind,
            lm.unsent as last_unsent, lm.has_attachment as last_has_attachment, lm.sender_name as last_sender_name
     from page p
@@ -140,6 +146,21 @@ const THREADS_SQL = `
       order by m.sent_at desc limit 1
     ) lm on true
     order by p.last_at desc`;
+
+/** How many threads are archived, and how many unread messages they hold (shown beside the Archived row). */
+export function archivedSummary() {
+  return cached('archived-summary', async () => {
+    const r = await q1<{ n: number; unread: number }>(
+      `select count(*)::int as n, coalesce(sum(u), 0)::int as unread from (
+         select sum(c.unread_count) as u
+         from conversation c join conversation_thread ct on ct.conversation_id = c.id
+         group by ct.tid
+         having max(c.last_message_at) is not null and bool_and(c.archived)
+       ) a`,
+    );
+    return { archivedCount: r?.n ?? 0, archivedUnread: r?.unread ?? 0 };
+  });
+}
 
 // ---------- messages ----------
 
@@ -172,6 +193,22 @@ async function loadThreadMessages(convIds: number[], p: MessagePage) {
   return rows.reverse();
 }
 
+/** The pinned messages of a thread (all its conversations), newest pin first. Unsent messages drop out. */
+export function threadPins(convIds: number[]) {
+  return q(
+    `select m.id, m.conversation_id, m.pinned_at, m.sent_at, m.from_me, left(m.body, 200) as body,
+            coalesce(spn.name, spa.address, sh.address) as sender_name,
+            exists(select 1 from attachment a where a.message_id = m.id) as has_attachment
+     from message m
+     left join handle sh on sh.id = m.sender_handle_id
+     left join person_name spn on spn.person_id = sh.person_id
+     left join person_address spa on spa.person_id = sh.person_id
+     where m.conversation_id = any($1) and m.pinned_at is not null and not m.unsent
+     order by m.pinned_at desc, m.id desc`,
+    [convIds],
+  );
+}
+
 // ---------- search ----------
 
 const HIT_START = '⟦';
@@ -201,6 +238,7 @@ export function toTsQuery(text: string): string | null {
 }
 
 export interface SearchFilter {
+  /** What was typed in the search box: free text plus Discord-style filters (see searchquery.ts). */
   text: string;
   tid?: string;
   service?: 'imessage' | 'sms' | 'rcs' | 'whatsapp' | 'apple';
@@ -211,39 +249,125 @@ export interface SearchFilter {
   offset?: number;
 }
 
-/** Full-text search over message bodies, newest first, with a highlighted snippet (hits wrapped in ⟦ ⟧). */
+/**
+ * Full-text search over message bodies, newest first, with a highlighted snippet (hits wrapped in ⟦ ⟧).
+ * The text may carry filters such as `from: mom has: image after: nov 25`; see parseSearch for the syntax.
+ */
 export function searchMessages(f: SearchFilter) {
   return cached(`search:${JSON.stringify(f)}`, () => loadSearch(f));
 }
 
+/** Words that mean the user themselves in `from:`. Extra names come from the SELF_NAMES setting. */
+const SELF_WORDS = new Set(['me', 'self', 'myself']);
+
+const isPhoneLike = (v: string) => /^[\d\s()+.-]+$/.test(v) && v.replace(/\D/g, '').length >= 4;
+
+/** SQL that is true when handle `h` (and its person name `pn`) matches a name, address or phone number typed by the user. */
+function handleMatch(like: string, digits: string | null) {
+  return `(pn.name ilike ${like} or h.display_name ilike ${like} or h.address ilike ${like} or h.normalized ilike ${like}` +
+    (digits ? ` or regexp_replace(h.address, '\\D', '', 'g') like '%' || ${digits} || '%'` : '') + ')';
+}
+
 async function loadSearch(f: SearchFilter) {
-  const tsq = toTsQuery(f.text);
-  if (!tsq) return [];
+  const parsed = parseSearch(f.text, { tz: config.timeZone });
+  const tsq = parsed.text ? toTsQuery(parsed.text) : null;
+  // A search with only exclusions ("-work") matches nearly everything, so it needs a filter or a real word.
+  if (!tsq && !hasFilters(parsed)) return [];
   let convIds: number[] | null = null;
   if (f.tid) {
     convIds = (await threadConversations(f.tid)).map((c) => c.id);
     if (!convIds.length) return [];
   }
+  const args: unknown[] = [];
+  const arg = (v: unknown) => { args.push(v); return `$${args.length}`; };
+  const where: string[] = ['not m.unsent'];
+  let from = '';
+  let snippet = 'left(m.body, 200)';
+  if (tsq) {
+    from = `, to_tsquery('simple', ${arg(tsq)}) query`;
+    where.push('m.tsv @@ query');
+    snippet = `ts_headline('simple', m.body, query,
+              'StartSel=${HIT_START}, StopSel=${HIT_END}, MaxWords=24, MinWords=10, MaxFragments=2, FragmentDelimiter=" … "')`;
+  }
+  if (convIds) where.push(`m.conversation_id = any(${arg(convIds)})`);
   const services = f.service === 'apple' ? ['imessage', 'sms', 'rcs'] : f.service ? [f.service] : null;
+  if (services) where.push(`m.service = any(${arg(services)})`);
+  if (f.fromMe !== undefined) where.push(`m.from_me = ${arg(f.fromMe)}`);
+  const after = [f.after, parsed.sentAfter].filter(Boolean).sort().pop();
+  const before = [f.before, parsed.sentBefore].filter(Boolean).sort()[0];
+  if (after) where.push(`m.sent_at >= ${arg(after)}`);
+  if (before) where.push(`m.sent_at < ${arg(before)}`);
+
+  if (parsed.service.length) {
+    const set = new Set(parsed.service.flatMap((s) => (s === 'apple' ? ['imessage', 'sms', 'rcs'] : [s])));
+    where.push(`m.service = any(${arg([...set])})`);
+  }
+
+  // from: any of the names given. "me" (and SELF_NAMES) means messages the user sent; anything else is a sender's
+  // name, address or phone number, matched on every handle of that person (so a name also finds their WhatsApp number).
+  if (parsed.from.length) {
+    const ors = parsed.from.map((v) => {
+      const low = v.toLowerCase();
+      if (SELF_WORDS.has(low) || config.selfNames.includes(low)) return 'm.from_me';
+      const like = arg(likePattern(v));
+      const dg = isPhoneLike(v) ? arg(v.replace(/\D/g, '')) : null;
+      const match = handleMatch(like, dg);
+      return `(not m.from_me and m.sender_handle_id in (
+                select h.id from handle h left join person_name pn on pn.person_id = h.person_id where ${match}
+                union
+                select h2.id from handle h2 where h2.person_id in (
+                  select h.person_id from handle h left join person_name pn on pn.person_id = h.person_id
+                  where h.person_id is not null and ${match})))`;
+    });
+    where.push(`(${ors.join(' or ')})`);
+  }
+
+  // in: a chat title, a person's name, a thread id (p12), or the address or phone number of a 1:1 chat's contact.
+  if (parsed.in.length) {
+    const ors = parsed.in.map((v) => {
+      const like = arg(likePattern(v));
+      const tid = /^[pc]\d+$/i.test(v) ? arg(v.toLowerCase()) : null;
+      const dg = isPhoneLike(v) ? arg(v.replace(/\D/g, '')) : null;
+      return `(coalesce(c.title, tpn.name, tpa.address) ilike ${like} or tpn.name ilike ${like}${tid ? ` or ct.tid = ${tid}` : ''}
+              or (not c.is_group and exists (select 1 from conversation_member cm join handle h on h.id = cm.handle_id
+                  left join person_name pn on pn.person_id = h.person_id
+                  where cm.conversation_id = m.conversation_id and ${handleMatch(like, dg)})))`;
+    });
+    where.push(`(${ors.join(' or ')})`);
+  }
+
+  // has: every value given has to hold. Image/video/audio use the attachment's mime type, "file" is any other
+  // attachment, "link" looks for a URL in the text. Stickers are small WebP images (WhatsApp) or files named "sticker".
+  const att = (cond: string) => `exists (select 1 from attachment a where a.message_id = m.id${cond ? ` and ${cond}` : ''})`;
+  const HAS: Record<HasValue, string> = {
+    image: att(`a.mime like 'image/%'`),
+    video: att(`a.mime like 'video/%'`),
+    audio: att(`a.mime like 'audio/%'`),
+    file: att(`coalesce(a.mime, '') not like 'image/%' and coalesce(a.mime, '') not like 'video/%' and coalesce(a.mime, '') not like 'audio/%'`),
+    sticker: att(`((a.mime = 'image/webp' and a.width <= 600) or a.filename ilike '%sticker%')`),
+    link: `m.body ~* '(https?://|www\\.)[^\\s]+'`,
+    attachment: att(''),
+  };
+  for (const h of parsed.has) where.push(HAS[h]);
+
+  if (parsed.is.includes('reply')) where.push('m.reply_to_source_id is not null');
+  if (parsed.is.includes('unread')) where.push('(not m.from_me and m.read_at is null and c.unread_count > 0)');
+
+  const limit = arg(Math.min(f.limit ?? 50, 200));
+  const offset = arg(f.offset ?? 0);
   return q(
     `select ${MESSAGE_COLUMNS}, ct.tid,
             coalesce(c.title, tpn.name, tpa.address) as thread_title, c.is_group,
-            ts_headline('simple', m.body, query,
-              'StartSel=${HIT_START}, StopSel=${HIT_END}, MaxWords=24, MinWords=10, MaxFragments=2, FragmentDelimiter=" … "') as snippet
+            ${snippet} as snippet
      from message m ${MESSAGE_JOINS}
      join conversation c on c.id = m.conversation_id
      join conversation_thread ct on ct.conversation_id = c.id
      left join person_name tpn on ct.tid like 'p%' and tpn.person_id = substr(ct.tid, 2)::bigint
-     left join person_address tpa on ct.tid like 'p%' and tpa.person_id = substr(ct.tid, 2)::bigint,
-     to_tsquery('simple', $1) query
-     where m.tsv @@ query and not m.unsent
-       and ($2::bigint[] is null or m.conversation_id = any($2))
-       and ($3::text[] is null or m.service = any($3))
-       and ($4::boolean is null or m.from_me = $4)
-       and ($5::timestamptz is null or m.sent_at >= $5)
-       and ($6::timestamptz is null or m.sent_at < $6)
+     left join person_address tpa on ct.tid like 'p%' and tpa.person_id = substr(ct.tid, 2)::bigint
+     ${from}
+     where ${where.join('\n       and ')}
      order by m.sent_at desc
-     limit $7 offset $8`,
-    [tsq, convIds, services, f.fromMe ?? null, f.after ?? null, f.before ?? null, Math.min(f.limit ?? 50, 200), f.offset ?? 0],
+     limit ${limit} offset ${offset}`,
+    args,
   );
 }

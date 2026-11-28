@@ -10,7 +10,7 @@ import { requireSession } from './auth.js';
 import { config } from './config.js';
 import { kvGet, kvSet, q } from './db.js';
 import { createSendRequest, getSendRequest, listSendRequests, MAX_TEXT, type SendRequest } from './outbox.js';
-import { listThreads, searchMessages, threadConversations, threadMessages } from './queries.js';
+import { listThreads, searchMessages, threadConversations, threadMessages, threadPins } from './queries.js';
 
 // ---------- tokens ----------
 
@@ -72,6 +72,7 @@ function messageLine(m: any, opts: { thread?: boolean } = {}) {
   if (atts.length) text += `${text ? ' ' : ''}[${atts.map((a) => `${a.mime?.split('/')[0] ?? 'file'}: ${a.filename ?? 'attachment'}`).join(', ')}]`;
   const reacts = (m.reactions ?? []) as { emoji: string; fromMe: boolean; name: string | null }[];
   if (reacts.length) text += ` (reactions: ${reacts.map((r) => `${r.emoji} ${r.fromMe ? 'Me' : (r.name ?? '?')}`).join(', ')})`;
+  if (m.pinned_at && !m.unsent) text += ' (pinned)';
   if (m.reply_to_id) text = `(replying to "${clip(m.reply_to_body, 60)}") ${text}`;
   return `${parts.join(' | ')} | ${who}: ${clip(text, 2000)}`;
 }
@@ -119,9 +120,13 @@ function buildServer(requestedBy: string) {
       description:
         'Full-text search over message text, newest first. Every word must appear; words match as prefixes ("pizz" finds "pizza"). ' +
         'Use "quoted words" for a phrase and -word to exclude a word. Filter by conversation, service, sender or date. ' +
+        'The query also understands Discord-style filters written inside it: from: <name, number or me>, in: <chat or person name>, ' +
+        'has: image|video|audio|file|link|sticker|attachment (repeat to require several), before:/after:/during: <2026-11-25, 2026-11, nov 25, yesterday>, ' +
+        'is: unread|reply, service: imessage|sms|whatsapp. Values with spaces go in quotes, e.g. from:"Cole Writer" has:image. ' +
+        'The query can be only filters, e.g. "has: image in: Mom". Anything else is searched as words. ' +
         'Returns message ids; pass one to read_conversation as around_message_id to see the surrounding messages.',
       inputSchema: {
-        query: z.string().min(1).describe('Words to find'),
+        query: z.string().min(1).describe('Words to find, optionally with filters such as "from: mom has: image after: nov 25"'),
         conversation: z.string().regex(/^[pc]\d+$/).optional().describe('Limit to one conversation id, e.g. p12'),
         service: z.enum(['imessage', 'sms', 'rcs', 'whatsapp', 'apple']).optional().describe('apple means iMessage, SMS and RCS'),
         from_me: z.boolean().optional().describe('true: only messages the user sent; false: only messages they received'),

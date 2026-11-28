@@ -1,7 +1,9 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import pg from 'pg';
+import { expireAvatar, RECHECK_MS, saveAvatar, touchAvatar } from '../avatars.js';
 import { config } from '../config.js';
+import { saveProvided, extractUrl } from '../linkpreview.js';
 import { q, q1 } from '../db.js';
 import {
   editMessage, emitLive, ingestMessage, markReceipts, setConversationRead, setReaction, unsendMessage,
@@ -14,7 +16,8 @@ interface WAMedia { kind: string; mime: string; filename?: string; size?: number
 
 type WAEvent =
   | { type: 'message'; id: string; chat: string; chatAddress?: string; isGroup: boolean; sender: string; senderName?: string;
-      fromMe: boolean; timestamp: number; text: string; replyTo?: string; media?: WAMedia; historical: boolean }
+      fromMe: boolean; timestamp: number; text: string; replyTo?: string; media?: WAMedia; historical: boolean;
+      link?: { url: string; title?: string; description?: string; thumbnail?: string } }
   | { type: 'reaction'; chat: string; target: string; sender: string; fromMe: boolean; emoji: string; timestamp: number }
   | { type: 'edit'; chat: string; target: string; text: string; timestamp: number }
   | { type: 'revoke'; chat: string; target: string }
@@ -22,6 +25,8 @@ type WAEvent =
   | { type: 'contact'; address: string; name: string; source: NameSource }
   | { type: 'chat'; chat: string; name: string; isGroup: boolean }
   | { type: 'typing'; chat: string; sender: string; typing: boolean; audio: boolean }
+  | { type: 'picture'; address: string; chat: string }
+  | { type: 'archive'; chat: string; archived: boolean; fromFullSync: boolean }
   | { type: 'status' };
 
 export interface WAStatus {
@@ -65,6 +70,68 @@ export class WhatsApp {
     setInterval(() => this.kick(), 30_000).unref();
     this.syncMutes().catch((e) => this.log.warn({ err: String(e) }, 'WhatsApp mute sync failed'));
     setInterval(() => this.syncMutes().catch((e) => this.log.warn({ err: String(e) }, 'WhatsApp mute sync failed')), 60_000).unref();
+    this.syncArchives().catch((e) => this.log.warn({ err: String(e) }, 'WhatsApp archive sync failed'));
+    setInterval(() => this.syncArchives().catch((e) => this.log.warn({ err: String(e) }, 'WhatsApp archive sync failed')), 60_000).unref();
+    setTimeout(() => this.syncAvatars(), 30_000).unref();
+    setInterval(() => this.syncAvatars(), 5 * 60_000).unref();
+  }
+
+  private avatarsRunning = false;
+
+  /**
+   * Profile photos of WhatsApp contacts (people you have a 1:1 chat with) and groups. Each pass handles a few that
+   * have never been fetched or were last checked over a day ago, newest chats first, one per second so WhatsApp
+   * isn't hammered. The connector answers "unchanged" for a photo we already have, so re-checks are cheap. A photo
+   * change on the account (a `picture` event) makes that one due immediately.
+   */
+  async syncAvatars(limit = 25) {
+    if (this.avatarsRunning || !this.configured) return;
+    this.avatarsRunning = true;
+    try {
+      const due = await q<{ kind: 'h' | 'c'; id: number; jid: string; source_key: string | null }>(
+        `select kind, id, jid, source_key from (
+           select * from (
+             select distinct on (h.id) 'h' as kind, h.id, h.address as jid, a.source_key, a.id as aid, c.last_message_at
+             from handle h
+             join conversation_member cm on cm.handle_id = h.id
+             join conversation c on c.id = cm.conversation_id and not c.is_group and c.network = 'whatsapp'
+             left join avatar a on a.handle_id = h.id
+             where h.network = 'whatsapp' and h.address not like 'lid:%'
+               and (a.id is null or a.checked_at < now() - ($1 || ' milliseconds')::interval)
+             order by h.id, c.last_message_at desc nulls last
+           ) people
+           union all
+           select 'c', c.id, c.source_id, a.source_key, a.id, c.last_message_at
+           from conversation c left join avatar a on a.conversation_id = c.id
+           where c.network = 'whatsapp' and c.is_group and c.source_id like '%@g.us' and c.last_message_at is not null
+             and (a.id is null or a.checked_at < now() - ($1 || ' milliseconds')::interval)
+         ) due
+         order by (aid is null) desc, last_message_at desc nulls last
+         limit $2`,
+        [String(RECHECK_MS), limit],
+      );
+      let changed = 0;
+      for (const d of due) {
+        const target = d.kind === 'h' ? { handleId: d.id } : { conversationId: d.id };
+        const res = await fetch(`${config.whatsapp.url}/avatar?jid=${encodeURIComponent(d.jid)}${d.source_key ? `&have=${encodeURIComponent(d.source_key)}` : ''}`, {
+          headers: { 'x-internal-secret': config.whatsapp.secret },
+          signal: AbortSignal.timeout(60_000),
+        }).catch(() => null);
+        if (!res || res.status === 503 || res.status === 502) break; // offline or rate limited: try again next pass
+        if (res.status === 304) await touchAvatar(target);
+        else if (res.status === 404) { if (await saveAvatar(target, null, null)) changed++; }
+        else if (res.ok) {
+          const ok = await saveAvatar(target, Buffer.from(await res.arrayBuffer()), res.headers.get('x-picture-id'));
+          if (ok) changed++;
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      if (due.length) this.log.info({ checked: due.length, changed }, 'WhatsApp profile photos checked');
+    } catch (e) {
+      this.log.warn({ err: String(e) }, 'WhatsApp profile photo sync failed');
+    } finally {
+      this.avatarsRunning = false;
+    }
   }
 
   /**
@@ -98,6 +165,54 @@ export class WhatsApp {
     );
     for (const c of changed) emitLive({ type: 'conversation-updated', conversationId: c.id });
     if (changed.length) this.log.info({ count: changed.length }, 'WhatsApp mute settings updated');
+  }
+
+  /**
+   * Copies each chat's archive flag from the WhatsApp account (whatsmeow keeps it in whatsmeow_chat_settings, updated
+   * by archive events and the full app-state sync) onto the matching conversation. Chats with no stored setting are
+   * left as they are, so archiving in the hub is never undone by a chat WhatsApp has not mentioned.
+   */
+  async syncArchives() {
+    const exists = await q1(`select 1 from information_schema.tables where table_name = 'whatsmeow_chat_settings'`);
+    if (!exists) return;
+    const changed = await q<{ id: number }>(
+      `with settings as (
+         select case
+                  when s.chat_jid like '%@lid' then coalesce(l.pn || '@s.whatsapp.net', s.chat_jid)
+                  else s.chat_jid
+                end as chat,
+                s.archived
+         from whatsmeow_chat_settings s
+         left join whatsmeow_lid_map l on s.chat_jid like '%@lid' and l.lid = split_part(s.chat_jid, '@', 1)
+       ),
+       target as (
+         select c.id, bool_or(st.archived) as archived
+         from conversation c join settings st on st.chat = c.source_id
+         where c.network = 'whatsapp'
+         group by c.id
+       )
+       update conversation c set archived = t.archived
+       from target t
+       where c.id = t.id and c.archived is distinct from t.archived
+       returning c.id`,
+    );
+    for (const c of changed) emitLive({ type: 'conversation-updated', conversationId: c.id });
+    if (changed.length) this.log.info({ count: changed.length }, 'WhatsApp archive settings updated');
+  }
+
+  /** Archives or unarchives a chat on the WhatsApp account itself. */
+  async setArchive(conversationId: number, chat: string, archived: boolean) {
+    const last = await q1<{ source_id: string; from_me: boolean; sent_at: string }>(
+      'select source_id, from_me, sent_at from message where conversation_id = $1 order by sent_at desc limit 1',
+      [conversationId],
+    );
+    await this.call('/archive', {
+      method: 'POST',
+      body: JSON.stringify({
+        chat, archived,
+        lastId: last?.source_id ?? '', lastFromMe: last?.from_me ?? false, lastTimestamp: last ? new Date(last.sent_at).getTime() : 0,
+      }),
+    });
   }
 
   /** Mutes or unmutes a chat on the WhatsApp account itself. until: null means always. */
@@ -175,6 +290,16 @@ export class WhatsApp {
             : [],
           historical: ev.historical,
         });
+        // The link preview WhatsApp sent along (title, description and a small thumbnail), kept for the link's card.
+        if (ev.link?.url && (ev.link.title || ev.link.thumbnail)) {
+          const url = extractUrl(ev.link.url);
+          if (url) {
+            await saveProvided(url, 'whatsapp', {
+              title: ev.link.title, description: ev.link.description,
+              image: ev.link.thumbnail ? Buffer.from(ev.link.thumbnail, 'base64') : null,
+            }).catch((e) => this.log.warn({ err: String(e) }, 'could not save WhatsApp link preview'));
+          }
+        }
         break;
       }
       case 'reaction':
@@ -204,6 +329,24 @@ export class WhatsApp {
             sender: c.is_group && ev.sender ? { network: 'whatsapp', address: ev.sender } : null,
           });
         }
+        break;
+      }
+      case 'picture': {
+        // Someone changed or removed their photo: make it due, and pick it up on the next pass (soon).
+        const h = ev.address ? await q1<{ id: number }>(`select id from handle where network = 'whatsapp' and address = $1`, [ev.address]) : undefined;
+        if (h) await expireAvatar({ handleId: h.id });
+        const c = await q1<{ id: number }>(`select id from conversation where network = 'whatsapp' and source_id = $1`, [ev.chat]);
+        if (c) await expireAvatar({ conversationId: c.id });
+        setTimeout(() => this.syncAvatars(), 5000).unref();
+        break;
+      }
+      case 'archive': {
+        // Archived or unarchived on the phone (or another device), live or as part of the full sync.
+        const c = await q1<{ id: number }>(
+          'update conversation set archived = $2 where network = $1 and source_id = $3 and archived is distinct from $2 returning id',
+          ['whatsapp', ev.archived, ev.chat],
+        );
+        if (c) emitLive({ type: 'conversation-updated', conversationId: c.id });
         break;
       }
       case 'status':

@@ -19,6 +19,8 @@ export const config = {
   defaultCountryCode: process.env.DEFAULT_COUNTRY_CODE ?? '1',
   /** IANA time zone used when the MCP server shows message times, e.g. America/Denver. */
   timeZone: process.env.TIME_ZONE || 'UTC',
+  /** Names that mean the user in search (`from: harrison`), comma separated, e.g. SELF_NAMES=harrison,harri665. `me` always works. */
+  selfNames: (process.env.SELF_NAMES ?? '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean),
   bluebubbles: {
     url: (process.env.BLUEBUBBLES_URL ?? '').replace(/\/+$/, ''),
     password: process.env.BLUEBUBBLES_PASSWORD ?? '',
