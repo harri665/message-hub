@@ -35,7 +35,34 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
   onSettings: () => void;
 }) {
   const qc = useQueryClient();
-  const threads = useQuery({ queryKey: ['threads'], queryFn: api.threads, refetchInterval: 60_000 });
+  // The inbox, or the archived list (opened from the Archived row; the back button returns).
+  const [showArchived, setShowArchived] = useState(false);
+  const threads = useQuery({ queryKey: ['threads', showArchived ? 'archived' : 'inbox'], queryFn: () => api.threads(showArchived), refetchInterval: 60_000 });
+  const archivedInfo = useQuery({ queryKey: ['threads', 'archived-summary'], queryFn: api.archivedSummary, refetchInterval: 60_000 });
+  const archivedCount = archivedInfo.data?.archivedCount ?? 0;
+  const archivedUnread = archivedInfo.data?.archivedUnread ?? 0;
+  const [menu, setMenu] = useState<{ tid: string; x: number; y: number; archived: boolean } | null>(null);
+  const [toast, setToast] = useState<{ tid: string; archived: boolean } | null>(null);
+  const setArchived = async (tid: string, archived: boolean) => {
+    setMenu(null);
+    try {
+      await api.archive(tid, archived);
+      setToast({ tid, archived });
+      setTimeout(() => setToast((t) => (t?.tid === tid ? null : t)), 6000);
+    } catch (e) {
+      setToast(null);
+      alert(e instanceof Error ? e.message : 'Could not change the archive setting');
+    }
+    qc.invalidateQueries({ queryKey: ['threads'] });
+    qc.invalidateQueries({ queryKey: ['thread', tid] });
+  };
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    window.addEventListener('click', close);
+    window.addEventListener('keydown', close);
+    return () => { window.removeEventListener('click', close); window.removeEventListener('keydown', close); };
+  }, [menu]);
   // Pointing at a conversation starts loading it, so it's usually ready by the time it's clicked.
   const prefetch = (tid: string) => {
     qc.prefetchQuery({ queryKey: ['thread', tid], queryFn: () => api.thread(tid) });
@@ -101,7 +128,10 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
   return (
     <aside className="sidebar glass">
       <header className="sidebar-head">
-        <h1>Messages</h1>
+        {showArchived ? (
+          <button className="pill-btn" onClick={() => setShowArchived(false)} aria-label="Back to all conversations">Back</button>
+        ) : null}
+        <h1>{showArchived ? 'Archived' : 'Messages'}</h1>
         <button className="pill-btn" onClick={onSettings}>Settings</button>
       </header>
       <div className="sidebar-tools">
@@ -132,7 +162,16 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
         {threads.isPending && <p className="list-note">Loading conversations</p>}
         {threads.isError && <p className="list-note">Could not load conversations. {threads.error.message}</p>}
         {threads.data && !threads.data.length && (
-          <p className="list-note">No conversations yet. Connect iMessage or link WhatsApp in Settings.</p>
+          <p className="list-note">{showArchived ? 'No archived conversations.' : 'No conversations yet. Connect iMessage or link WhatsApp in Settings.'}</p>
+        )}
+        {!showArchived && archivedCount > 0 && !deferred && (
+          <button className="thread-row archived-row" onClick={() => setShowArchived(true)}>
+            <span className="archived-label">Archived</span>
+            <span className="thread-badges">
+              {archivedUnread > 0 && <span className="muted-tag">{archivedUnread} unread</span>}
+              <span className="muted-tag">{archivedCount}</span>
+            </span>
+          </button>
         )}
         {threads.data && threads.data.length > 0 && !filtered.length && !deferred && (
           <p className="list-note">{filter === 'unread' ? "You're all caught up." : 'No conversations here.'}</p>
@@ -142,6 +181,7 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
             key={t.tid}
             className={`thread-row ${t.tid === activeTid ? 'active' : ''} ${t.unread ? 'unread' : ''} ${t.muted ? 'muted' : ''}`}
             onClick={() => onOpen(t.tid)}
+            onContextMenu={(e) => { e.preventDefault(); setMenu({ tid: t.tid, x: e.clientX, y: e.clientY, archived: showArchived }); }}
             onPointerEnter={() => prefetch(t.tid)}
             onFocus={() => prefetch(t.tid)}
             aria-current={t.tid === activeTid ? 'page' : undefined}
@@ -192,6 +232,17 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
           </section>
         )}
       </nav>
+      {menu && (
+        <div className="mute-menu glass ctx-menu" role="menu" style={{ left: menu.x, top: menu.y }}>
+          <button role="menuitem" onClick={() => setArchived(menu.tid, !menu.archived)}>{menu.archived ? 'Unarchive' : 'Archive'}</button>
+        </div>
+      )}
+      {toast && (
+        <div className="toast glass" role="status">
+          <span>{toast.archived ? 'Chat archived' : 'Chat unarchived'}</span>
+          <button className="pill-btn" onClick={() => setArchived(toast.tid, !toast.archived)}>Undo</button>
+        </div>
+      )}
     </aside>
   );
 }

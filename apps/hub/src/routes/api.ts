@@ -12,7 +12,7 @@ import { bus, emitLive, type LiveEvent } from '../store.js';
 import { cached } from '../cache.js';
 import { AVATAR_SIZES, resizedAvatar, THREAD_AVATAR_SQL, threadAvatar } from '../avatars.js';
 import { approveSendRequest, listSendRequests, rejectSendRequest, sendText } from '../outbox.js';
-import { listThreads, searchMessages, threadConversations, threadMessages, type SearchFilter } from '../queries.js';
+import { archivedSummary, listThreads, searchMessages, threadConversations, threadMessages, threadPins, type SearchFilter } from '../queries.js';
 
 const THUMB_WIDTHS = new Set([320, 640, 1280]);
 /** Image formats we make resized copies of. Others (SVG, TIFF, ...) are never decoded on the server. */
@@ -72,7 +72,7 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
       const row = await q1(
         `select ct.tid, m.body, m.service, m.from_me, coalesce(spn.name, spa.address, sh.address) as sender_name,
                 c.is_group, c.title, exists(select 1 from attachment a where a.message_id = m.id) as has_attachment,
-                coalesce(c.muted_until > now(), false) as muted
+                coalesce(c.muted_until > now(), false) as muted, c.archived
          from message m join conversation c on c.id = m.conversation_id
          join conversation_thread ct on ct.conversation_id = c.id
          left join handle sh on sh.id = m.sender_handle_id
@@ -128,9 +128,17 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
     r.post('/api/whatsapp/logout', async () => wa.logout());
 
     // ---------- inbox ----------
-    r.get<{ Querystring: { limit?: string; offset?: string } }>('/api/threads', async (req) =>
-      listThreads({ limit: Number(req.query.limit ?? 100), offset: Number(req.query.offset ?? 0) }),
-    );
+    // The inbox, or with ?archived=1 the archived threads. The inbox's headers carry the Archived row's numbers.
+    r.get<{ Querystring: { limit?: string; offset?: string; archived?: string } }>('/api/threads', async (req, reply) => {
+      const archived = req.query.archived === '1' || req.query.archived === 'true';
+      if (!archived) {
+        const s = await archivedSummary();
+        reply.header('x-archived-count', s.archivedCount).header('x-archived-unread', s.archivedUnread);
+      }
+      return listThreads({ limit: Number(req.query.limit ?? 100), offset: Number(req.query.offset ?? 0), archived });
+    });
+
+    r.get('/api/threads/archived-summary', async () => archivedSummary());
 
     r.get<{ Params: { tid: string } }>('/api/threads/:tid', async (req, reply) => {
       const detail = await cached(`thread:${req.params.tid}`, () => threadDetail(req.params.tid));
@@ -164,6 +172,7 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
         tid: tid,
         isGroup,
         avatar,
+        archived: convs.every((c) => c.archived),
         muted: convs.every((c) => !!c.muted_until && new Date(c.muted_until) > new Date()),
         title: convs[0].title ?? name ?? members.map((m) => m.name ?? m.address).join(', '),
         conversations: convs.map((c) => ({
@@ -171,6 +180,10 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
           lastService: svc.get(c.id) ?? (c.network === 'whatsapp' ? 'whatsapp' : 'imessage'),
         })),
         members,
+        pins: (await threadPins(convs.map((c) => c.id))).map((p) => ({
+          id: p.id, pinnedAt: p.pinned_at, sentAt: p.sent_at, fromMe: p.from_me, text: p.body,
+          sender: p.from_me ? null : p.sender_name, hasAttachment: p.has_attachment,
+        })),
       };
     };
 
@@ -205,6 +218,44 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
       }
       return { ok: true, muted, until };
     });
+
+    // Pin or unpin one message. Pins live only in the hub: nothing is sent to iMessage or WhatsApp.
+    for (const [action, pinned] of [['pin', true], ['unpin', false]] as const) {
+      r.post<{ Params: { id: string } }>(`/api/messages/:id/${action}`, async (req, reply) => {
+        const id = Number(req.params.id);
+        if (!Number.isSafeInteger(id)) return reply.code(404).send({ error: 'message not found' });
+        const row = await q1<{ conversation_id: number; pinned_at: string | null }>(
+          // Pinning again keeps the original pin time; unsent messages can't be pinned.
+          pinned
+            ? "update message set pinned_at = coalesce(pinned_at, now()) where id = $1 and not unsent and kind = 'text' returning conversation_id, pinned_at"
+            : 'update message set pinned_at = null where id = $1 returning conversation_id, pinned_at',
+          [id],
+        );
+        if (!row) return reply.code(404).send({ error: 'message not found' });
+        emitLive({ type: 'message-updated', conversationId: row.conversation_id, messageId: id });
+        return { ok: true, pinned: !!row.pinned_at, pinnedAt: row.pinned_at };
+      });
+    }
+
+    // Archive or unarchive every chat in a thread (a person's 1:1 chats are one thread). A thread counts as archived
+    // when all its chats are; new messages never un-archive it. WhatsApp chats are archived on the account too, so the
+    // phone matches; iMessage has no archive the Mac can read or change, so those are archived in Message Hub only.
+    for (const [action, archived] of [['archive', true], ['unarchive', false]] as const) {
+      r.post<{ Params: { tid: string } }>(`/api/threads/:tid/${action}`, async (req, reply) => {
+        const convs = await threadConversations(req.params.tid);
+        if (!convs.length) return reply.code(404).send({ error: 'thread not found' });
+        for (const c of convs) {
+          if (c.network === 'whatsapp') {
+            await wa.setArchive(c.id, c.source_id, archived).catch((e) => {
+              throw Object.assign(new Error(`Couldn't change the archive setting on WhatsApp: ${e instanceof Error ? e.message : e}`), { statusCode: 502 });
+            });
+          }
+          await q('update conversation set archived = $2 where id = $1', [c.id, archived]);
+          emitLive({ type: 'conversation-updated', conversationId: c.id });
+        }
+        return { ok: true, archived };
+      });
+    }
 
     r.post<{ Params: { tid: string } }>('/api/threads/:tid/read', async (req) => {
       const convs = await threadConversations(req.params.tid);

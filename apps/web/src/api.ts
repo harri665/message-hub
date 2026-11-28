@@ -18,6 +18,7 @@ export interface ThreadSummary {
   last_sender_name: string | null;
   muted: boolean;
   muted_until: string | null;
+  archived: boolean;
   /** Version of the profile photo (see /api/avatars/:tid), or null when there is none. */
   avatar: string | null;
 }
@@ -27,9 +28,24 @@ export interface ThreadDetail {
   isGroup: boolean;
   avatar: string | null;
   muted: boolean;
+  archived: boolean;
   title: string;
   conversations: { id: number; network: Network; title: string | null; lastMessageAt: string | null; unread: number; lastService: Service }[];
   members: { id: number; network: Network; address: string; name: string | null }[];
+  /** Pinned messages (private to the hub), newest pin first. */
+  pins: Pin[];
+}
+
+export interface Pin {
+  id: number;
+  pinnedAt: string;
+  sentAt: string;
+  fromMe: boolean;
+  /** First 200 characters of the message, or null for an attachment with no text. */
+  text: string | null;
+  /** Who sent it; null for you. */
+  sender: string | null;
+  hasAttachment: boolean;
 }
 
 export interface Attachment { id: number; mime: string | null; filename: string | null; size: number | null; width: number | null; height: number | null }
@@ -47,6 +63,7 @@ export interface Message {
   read_at: string | null;
   edited_at: string | null;
   unsent: boolean;
+  pinned_at: string | null;
   status: 'sending' | 'sent' | 'failed';
   sender_person_id: number | null;
   sender_name: string | null;
@@ -123,7 +140,9 @@ export const api = {
     request<{ ok: true }>('/api/settings/bluebubbles', { method: 'PUT', body: JSON.stringify({ url, password }) }),
   logout: () => post('/api/auth/logout'),
   status: () => request<Status>('/api/status'),
-  threads: () => request<ThreadSummary[]>('/api/threads?limit=300'),
+  threads: (archived = false) => request<ThreadSummary[]>(`/api/threads?limit=300${archived ? '&archived=1' : ''}`),
+  archivedSummary: () => request<{ archivedCount: number; archivedUnread: number }>('/api/threads/archived-summary'),
+  archive: (tid: string, archived: boolean) => post(`/api/threads/${tid}/${archived ? 'archive' : 'unarchive'}`),
   thread: (tid: string) => request<ThreadDetail>(`/api/threads/${tid}`),
   messages: (tid: string, page: MessagePage = {}) => {
     const qs = new URLSearchParams({ limit: '60' });
@@ -134,6 +153,8 @@ export const api = {
   },
   markRead: (tid: string) => post(`/api/threads/${tid}/read`),
   mute: (tid: string, muted: boolean, hours: number | null = null) => post(`/api/threads/${tid}/mute`, { muted, hours }),
+  pin: (id: number) => post<{ ok: true; pinned: boolean }>(`/api/messages/${id}/pin`),
+  unpin: (id: number) => post<{ ok: true; pinned: boolean }>(`/api/messages/${id}/unpin`),
   send: (tid: string, body: { text: string; conversationId?: number; replyToId?: number }) => post(`/api/threads/${tid}/send`, body),
   sendFile: (tid: string, file: File, conversationId?: number, caption?: string) => {
     const form = new FormData();

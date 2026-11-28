@@ -10,7 +10,7 @@ import { requireSession } from './auth.js';
 import { config } from './config.js';
 import { kvGet, kvSet, q } from './db.js';
 import { createSendRequest, getSendRequest, listSendRequests, MAX_TEXT, type SendRequest } from './outbox.js';
-import { listThreads, searchMessages, threadConversations, threadMessages } from './queries.js';
+import { listThreads, searchMessages, threadConversations, threadMessages, threadPins } from './queries.js';
 
 // ---------- tokens ----------
 
@@ -72,6 +72,7 @@ function messageLine(m: any, opts: { thread?: boolean } = {}) {
   if (atts.length) text += `${text ? ' ' : ''}[${atts.map((a) => `${a.mime?.split('/')[0] ?? 'file'}: ${a.filename ?? 'attachment'}`).join(', ')}]`;
   const reacts = (m.reactions ?? []) as { emoji: string; fromMe: boolean; name: string | null }[];
   if (reacts.length) text += ` (reactions: ${reacts.map((r) => `${r.emoji} ${r.fromMe ? 'Me' : (r.name ?? '?')}`).join(', ')})`;
+  if (m.pinned_at && !m.unsent) text += ' (pinned)';
   if (m.reply_to_id) text = `(replying to "${clip(m.reply_to_body, 60)}") ${text}`;
   return `${parts.join(' | ')} | ${who}: ${clip(text, 2000)}`;
 }

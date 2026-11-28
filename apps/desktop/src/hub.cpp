@@ -155,7 +155,7 @@ Hub::Hub()
       m_resultModel({"key", "tid", "title", "initials", "photo", "time", "preview", "unread", "service", "isGroup", "muted"}, "key"),
       m_messageModel({"key", "id", "fromMe", "kind", "html", "body", "jumbo", "time", "service", "senderName", "showName",
                       "separator", "tail", "statusText", "failed", "pending", "attachments", "reactions", "replyName",
-                      "replyBody", "unsent", "edited"},
+                      "replyBody", "unsent", "edited", "pinned"},
                      "key") {
     m_nam.setTransferTimeout(60000);
     m_nam.setAutoDeleteReplies(false);
@@ -165,6 +165,9 @@ Hub::Hub()
     m_messagesTimer.setSingleShot(true);
     m_messagesTimer.setInterval(150);
     connect(&m_messagesTimer, &QTimer::timeout, this, &Hub::refreshCurrent);
+    m_detailTimer.setSingleShot(true);
+    m_detailTimer.setInterval(150);
+    connect(&m_detailTimer, &QTimer::timeout, this, &Hub::refreshDetail);
     m_searchTimer.setSingleShot(true);
     m_searchTimer.setInterval(250);
     connect(&m_searchTimer, &QTimer::timeout, this, [this] { search(m_filter); });
@@ -363,6 +366,10 @@ void Hub::signedOut() {
     m_reconnect.stop();
     closeThread();
     m_allThreads.clear();
+    m_archivedThreads.clear();
+    m_showArchived = false;
+    m_archivedCount = m_archivedUnread = 0;
+    emit archivedChanged();
     rebuildThreadModel();
     QDir(cacheFile({})).removeRecursively();  // cached messages belong to the session
     setToken({});
@@ -391,6 +398,54 @@ void Hub::loadThreads() {
         m_threadsReply = nullptr;
         applyThreads(toRows(doc), true);
     }, [this](int, const QString &) { m_threadsReply = nullptr; });
+    loadArchived();
+}
+
+// The Archived row's numbers, and (while that list is showing) the archived chats themselves.
+void Hub::loadArchived() {
+    const int gen = m_generation;
+    handle(call("GET", "/api/threads/archived-summary"), [this, gen](const QJsonDocument &doc) {
+        if (gen != m_generation) return;
+        const auto o = doc.object();
+        const int n = o.value("archivedCount").toInt(), u = o.value("archivedUnread").toInt();
+        if (n == m_archivedCount && u == m_archivedUnread) return;
+        m_archivedCount = n;
+        m_archivedUnread = u;
+        emit archivedChanged();
+        if (m_showArchived && n == 0) setShowArchived(false);
+    });
+    if (!m_showArchived || m_archivedReply) return;
+    m_archivedReply = call("GET", "/api/threads?limit=300&archived=1");
+    handle(m_archivedReply, [this, gen](const QJsonDocument &doc) {
+        m_archivedReply = nullptr;
+        if (gen != m_generation) return;
+        m_archivedThreads.clear();
+        for (const auto &r : toRows(doc)) m_archivedThreads << decorateThread(r);
+        rebuildThreadModel();
+    }, [this](int, const QString &) { m_archivedReply = nullptr; });
+}
+
+void Hub::setShowArchived(bool show) {
+    if (show == m_showArchived) return;
+    m_showArchived = show;
+    m_archivedThreads.clear();
+    emit archivedChanged();
+    rebuildThreadModel();
+    if (show) loadArchived();
+}
+
+void Hub::archiveThread(const QString &tid, bool archive) {
+    // Move it between the lists at once; the hub's answer settles the real state.
+    auto &from = m_showArchived ? m_archivedThreads : m_allThreads;
+    for (int i = 0; i < from.size(); ++i)
+        if (from.at(i).value("tid") == tid) { from.removeAt(i); break; }
+    m_archivedCount += archive ? 1 : -1;
+    if (m_archivedCount < 0) m_archivedCount = 0;
+    emit archivedChanged();
+    rebuildThreadModel();
+    const QString path = QStringLiteral("/api/threads/%1/%2").arg(tid, archive ? "archive" : "unarchive");
+    handle(call("POST", path, "{}"), [this](const QJsonDocument &) { scheduleThreads(0); },
+           [this](int, const QString &e) { setError(e); scheduleThreads(0); });
 }
 
 QVariantMap Hub::decorateThread(QVariantMap t) const {
@@ -453,13 +508,14 @@ void Hub::rebuildThreadModel() {
         m_unreadTotal = unread;
         emit unreadTotalChanged();
     }
+    const auto &source = m_showArchived ? m_archivedThreads : m_allThreads;
     if (m_filter.trimmed().isEmpty()) {
-        m_threadModel.setRows(m_allThreads);
+        m_threadModel.setRows(source);
         return;
     }
     const QString f = m_filter.trimmed();
     QList<QVariantMap> rows;
-    for (const auto &t : std::as_const(m_allThreads))
+    for (const auto &t : std::as_const(source))
         if (t.value("title").toString().contains(f, Qt::CaseInsensitive)) rows << t;
     m_threadModel.setRows(rows);
 }
@@ -724,10 +780,54 @@ void Hub::applyMessages() {
             {"replyBody", oneLine(m.value("reply_to_body").toString(), 120)},
             {"unsent", m.value("unsent").toBool()},
             {"edited", !m.value("edited_at").toString().isEmpty()},
+            {"pinned", !pending && !m.value("unsent").toBool() && !m.value("pinned_at").toString().isEmpty()},
         };
         rows << row;
     }
     m_messageModel.setRows(rows);
+    if (m_revealId) tryReveal();
+}
+
+void Hub::refreshDetail() {
+    if (m_tid.isEmpty() || !signedIn()) return;
+    const int gen = m_generation;
+    handle(call("GET", "/api/threads/" + m_tid), [this, gen](const QJsonDocument &doc) {
+        if (gen != m_generation) return;
+        m_detail = doc.object().toVariantMap();
+        emit currentChanged();
+        saveThreadCache(m_tid);
+    });
+}
+
+void Hub::pinMessage(qint64 id, bool pin) {
+    if (m_tid.isEmpty()) return;
+    // Show it at once; the hub's answer (and the live event for other apps) settles the real state.
+    for (auto &m : m_msgs)
+        if (m.value("id").toLongLong() == id) m["pinned_at"] = pin ? isoNow() : QString();
+    applyMessages();
+    const QString path = QStringLiteral("/api/messages/%1/%2").arg(id).arg(pin ? "pin" : "unpin");
+    auto done = [this](const QJsonDocument &) { refreshCurrent(); refreshDetail(); };
+    handle(call("POST", path, "{}"), done, [this](int, const QString &e) { setError(e); refreshCurrent(); });
+}
+
+// Scroll target: wait for the message to be loaded (paging back through older messages), then tell the view its row.
+void Hub::revealMessage(qint64 id) {
+    m_revealId = id;
+    tryReveal();
+}
+
+void Hub::tryReveal() {
+    const auto &rows = m_messageModel.rows();
+    const QString key = "m" + QString::number(m_revealId);
+    for (int i = 0; i < rows.size(); ++i)
+        if (rows.at(i).value("key").toString() == key) {
+            const qint64 id = m_revealId;
+            m_revealId = 0;
+            emit revealRequested(i, id);
+            return;
+        }
+    if (m_hasOlder && !m_loadingOlder) loadOlder();
+    else if (!m_hasOlder && !m_loadingOlder) m_revealId = 0;  // not in this conversation any more
 }
 
 void Hub::setWindowActive(bool a) {
@@ -1065,8 +1165,8 @@ void Hub::onLive(const QString &text) {
         }
         // The local patch shows it at once; the hub's own list follows a little later.
         scheduleThreads(patched ? 5000 : 300);
-        // Chats muted on the phone stay quiet here too: no notification and no island banner, only the unread count.
-        if (!fromMe && !preview.isEmpty() && !preview.value("muted").toBool()) {
+        // Chats muted on the phone and archived chats stay quiet here too: no notification and no island banner.
+        if (!fromMe && !preview.isEmpty() && !preview.value("muted").toBool() && !preview.value("archived").toBool()) {
             QVariantMap m = preview;
             QString who = preview.value("sender_name").toString();
             if (who.isEmpty()) who = preview.value("title").toString();
@@ -1080,7 +1180,7 @@ void Hub::onLive(const QString &text) {
             if (m_islandClients == 0) notify(preview);  // the island shows it instead
         }
     } else if (type == "message-updated") {
-        if (inCurrent) m_messagesTimer.start();
+        if (inCurrent) { m_messagesTimer.start(); m_detailTimer.start(); }
         scheduleThreads(3000);
     } else if (type == "conversation-updated") {
         scheduleThreads(1500);

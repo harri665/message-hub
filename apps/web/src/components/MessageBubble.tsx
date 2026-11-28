@@ -71,6 +71,16 @@ function AttachmentView({ a, onOpenImage }: { a: Attachment; onOpenImage: (src: 
   );
 }
 
+/** A map-pin style glyph, drawn here so it follows the text colour. */
+export function PinGlyph({ className, title }: { className?: string; title?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" width="12" height="12" role="img" aria-label={title} fill="currentColor">
+      {title && <title>{title}</title>}
+      <path d="M5 1.5h6l-.7 1.2v3.3l2 2.3v1H8.8V14L8 15l-.8-1V9.3H3v-1l2-2.3V2.7z" />
+    </svg>
+  );
+}
+
 function statusText(m: Message) {
   if (m.status === 'failed') return 'Not delivered';
   if (m.read_at) return `Read ${clock(m.read_at)}`;
@@ -79,9 +89,9 @@ function statusText(m: Message) {
 }
 
 export function MessageBubble({
-  m, isGroup, firstInRun, lastInRun, showStatus, highlighted, onReply, onOpenImage,
+  m, isGroup, firstInRun, lastInRun, showStatus, highlighted, onReply, onTogglePin, onOpenImage,
 }: {
-  m: Message; isGroup: boolean; firstInRun: boolean; lastInRun: boolean; showStatus: boolean; highlighted?: boolean; onReply: () => void;
+  m: Message; isGroup: boolean; firstInRun: boolean; lastInRun: boolean; showStatus: boolean; highlighted?: boolean; onReply: () => void; onTogglePin: () => void;
   onOpenImage: (src: string) => void;
 }) {
   if (m.kind === 'system') {
@@ -95,7 +105,7 @@ export function MessageBubble({
   const hasText = !!m.body && !m.unsent;
   return (
     <div
-      className={`msg ${side} ${serviceClass(m.service)} ${firstInRun ? 'first' : ''} ${lastInRun ? 'last' : ''} ${highlighted ? 'hit' : ''}`}
+      className={`msg ${side} ${serviceClass(m.service)} ${firstInRun ? 'first' : ''} ${lastInRun ? 'last' : ''} ${highlighted ? 'hit' : ''} ${m.pinned_at ? 'pinned' : ''}`}
       data-mid={m.id}
     >
       {isGroup && !m.from_me && firstInRun && <span className="msg-sender">{m.sender_name}</span>}
@@ -110,6 +120,7 @@ export function MessageBubble({
           {m.attachments.map((a) => (
             <AttachmentView key={a.id} a={a} onOpenImage={onOpenImage} />
           ))}
+          {m.pinned_at && !m.unsent && <PinGlyph className="pin-mark" title="Pinned" />}
           {m.unsent && <div className="bubble unsent">Message unsent</div>}
           {hasText && (
             <div className="bubble">
@@ -128,6 +139,11 @@ export function MessageBubble({
           )}
         </div>
         <button className="msg-action" onClick={onReply} aria-label="Reply">Reply</button>
+        {!m.unsent && (
+          <button className="msg-action" onClick={onTogglePin} aria-label={m.pinned_at ? 'Unpin' : 'Pin'}>
+            {m.pinned_at ? 'Unpin' : 'Pin'}
+          </button>
+        )}
       </div>
       {(lastInRun || showStatus) && (
         <span className="msg-meta">

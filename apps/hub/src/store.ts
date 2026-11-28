@@ -254,7 +254,7 @@ export async function editMessage(network: Network, targetSourceId: string, body
 export async function unsendMessage(network: Network, targetSourceId: string) {
   const target = await findMessage(network, targetSourceId);
   if (!target) return;
-  await q('update message set unsent = true, body = null where id = $1', [target.id]);
+  await q('update message set unsent = true, body = null, pinned_at = null where id = $1', [target.id]);
   emitLive({ type: 'message-updated', conversationId: target.conversation_id, messageId: target.id });
 }
 

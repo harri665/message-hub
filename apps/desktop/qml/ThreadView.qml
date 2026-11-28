@@ -12,6 +12,27 @@ Item {
     readonly property bool open: Hub.currentTid.length > 0
     readonly property bool group: !!Hub.current.isGroup
 
+    // ---- pinned messages ----
+    readonly property var pins: Hub.current.pins ?? []
+    property int pinIndex: 0
+    property real flashId: 0
+    readonly property int pinShown: pins.length ? Math.min(pinIndex, pins.length - 1) : 0
+    onPinsChanged: if (pinIndex >= pins.length) pinIndex = 0
+    function showPin(i) {
+        if (!pins.length) return;
+        pinIndex = i;
+        Hub.revealMessage(pins[i].id);
+    }
+    Connections {
+        target: Hub
+        function onRevealRequested(row, id) {
+            list.positionViewAtIndex(row, ListView.Center);
+            view.flashId = id;
+            flashTimer.restart();
+        }
+    }
+    Timer { id: flashTimer; interval: 2000; onTriggered: view.flashId = 0 }
+
     function focusComposer() { composer.focusInput(); }
 
     // Start each conversation at its newest message (also when the window opens on one that is already loaded).
@@ -19,6 +40,7 @@ Item {
     function showNewest() {
         if (Hub.currentTid === shownTid) return;
         shownTid = Hub.currentTid;
+        pinIndex = 0;
         replyTo = null;
         list.positionViewAtBeginning();
     }
@@ -84,12 +106,70 @@ Item {
         font.pixelSize: 15
     }
 
+    // ---- pinned bar ----
+    Rectangle {
+        id: pinBar
+        visible: view.open && view.pins.length > 0
+        anchors.top: bar.bottom
+        width: parent.width
+        height: visible ? 44 : 0
+        z: 1
+        color: Theme.glass ? Qt.rgba(Theme.bg.r, Theme.bg.g, Theme.bg.b, 0.85) : Theme.bg
+        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.sep }
+        Glyph { id: pinIcon; x: 16; anchors.verticalCenter: parent.verticalCenter; name: "pin"; width: 14; height: 14; color: Theme.accent }
+        Column {
+            anchors.verticalCenter: parent.verticalCenter
+            x: 42
+            width: parent.width - 42 - unpinBtn.width - 24
+            Text {
+                width: parent.width
+                elide: Text.ElideRight
+                color: Theme.accent
+                font.pixelSize: 11
+                font.family: Theme.boldFont
+                font.weight: Font.DemiBold
+                text: {
+                    if (!view.pins.length) return "";
+                    const p = view.pins[view.pinShown];
+                    return (view.pins.length > 1 ? "Pinned " + (view.pinShown + 1) + " of " + view.pins.length : "Pinned") + "  " + (p.sender ?? "You");
+                }
+            }
+            Text {
+                width: parent.width
+                elide: Text.ElideRight
+                color: Theme.text
+                font.pixelSize: 12
+                text: {
+                    if (!view.pins.length) return "";
+                    const p = view.pins[view.pinShown];
+                    return p.text ? p.text.replace(/\s+/g, " ") : (p.hasAttachment ? "Attachment" : "Message");
+                }
+            }
+        }
+        MouseArea {
+            anchors.fill: parent
+            anchors.rightMargin: unpinBtn.width + 20
+            cursorShape: Qt.PointingHandCursor
+            onClicked: view.showPin((view.pinShown + 1) % view.pins.length)
+        }
+        Text {
+            id: unpinBtn
+            anchors.right: parent.right
+            anchors.rightMargin: 16
+            anchors.verticalCenter: parent.verticalCenter
+            text: "Unpin"
+            color: Theme.accent
+            font.pixelSize: 12
+            MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor; onClicked: Hub.pinMessage(view.pins[view.pinShown].id, false) }
+        }
+    }
+
     // ---- messages (newest at the bottom; the list runs bottom-to-top so new rows never shift the view) ----
     ListView {
         id: list
         objectName: "messageList"
         visible: view.open
-        anchors.top: bar.bottom
+        anchors.top: pinBar.visible ? pinBar.bottom : bar.bottom
         anchors.bottom: composer.top
         width: parent.width
         clip: true
@@ -122,6 +202,8 @@ Item {
         delegate: MessageRow {
             width: list.width
             group: view.group
+            flashId: view.flashId
+            onPinRequested: (id, pin) => Hub.pinMessage(id, pin)
             onReplyRequested: (id, name, body) => { view.replyTo = { id: id, name: name, body: body }; composer.focusInput(); }
             onMenuRequested: (item, x, y, entries) => {
                 const p = item.mapToItem(view.menu, x, y);

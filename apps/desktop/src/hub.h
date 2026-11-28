@@ -38,6 +38,9 @@ class Hub : public QObject {
     Q_PROPERTY(bool hasOlder READ hasOlder NOTIFY olderChanged)
     Q_PROPERTY(bool loadingOlder READ loadingOlder NOTIFY olderChanged)
     Q_PROPERTY(int unreadTotal READ unreadTotal NOTIFY unreadTotalChanged)
+    Q_PROPERTY(bool showArchived READ showArchived NOTIFY archivedChanged)
+    Q_PROPERTY(int archivedCount READ archivedCount NOTIFY archivedChanged)
+    Q_PROPERTY(int archivedUnread READ archivedUnread NOTIFY archivedChanged)
     Q_PROPERTY(bool windowActive READ windowActive WRITE setWindowActive NOTIFY windowActiveChanged)
 
 public:
@@ -59,6 +62,9 @@ public:
     bool hasOlder() const { return m_hasOlder; }
     bool loadingOlder() const { return m_loadingOlder; }
     int unreadTotal() const { return m_unreadTotal; }
+    bool showArchived() const { return m_showArchived; }
+    int archivedCount() const { return m_archivedCount; }
+    int archivedUnread() const { return m_archivedUnread; }
     bool windowActive() const { return m_windowActive; }
     void setWindowActive(bool a);
 
@@ -72,6 +78,13 @@ public:
     Q_INVOKABLE void pickFile(int conversationId);
     Q_INVOKABLE void sendFiles(const QList<QUrl> &files, int conversationId);
     Q_INVOKABLE void openAttachment(qint64 id, const QString &filename);
+    Q_INVOKABLE void pinMessage(qint64 id, bool pin);
+    // Archive or unarchive a whole chat (the hub applies it to every chat of the person, and to WhatsApp).
+    Q_INVOKABLE void archiveThread(const QString &tid, bool archive);
+    // Switch the sidebar between the inbox and the archived chats.
+    Q_INVOKABLE void setShowArchived(bool show);
+    // Bring a message into view (loading older pages if it isn't loaded yet); revealRequested() reports its row.
+    Q_INVOKABLE void revealMessage(qint64 id);
     Q_INVOKABLE void copyText(const QString &text);
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void openLink(const QString &url);
@@ -106,10 +119,12 @@ signals:
     void currentChanged();
     void olderChanged();
     void unreadTotalChanged();
+    void archivedChanged();
     void windowActiveChanged();
     void showRequested(const QString &tid);
     void inboxChanged();
     void incoming(const QVariantMap &message);  // a new message from someone else
+    void revealRequested(int row, qint64 id);
     void sendResult(const QString &tid, bool ok, const QString &error);
 
 private:
@@ -129,6 +144,9 @@ private:
     void rebuildThreadModel();
     QVariantMap decorateThread(QVariantMap t) const;
     void refreshCurrent();
+    void refreshDetail();
+    void loadArchived();
+    void tryReveal();
     void applyMessages();
     void markRead(const QString &tid);
     qint64 newestId() const;
@@ -152,6 +170,11 @@ private:
     bool m_online = false;
     bool m_windowActive = false;
     int m_unreadTotal = 0;
+    bool m_showArchived = false;
+    int m_archivedCount = 0;
+    int m_archivedUnread = 0;
+    QList<QVariantMap> m_archivedThreads;  // only loaded while the archived list is showing
+    QNetworkReply *m_archivedReply = nullptr;
     int m_writes = 0;  // sends still going out
     int m_islandClients = 0;
 
@@ -162,6 +185,8 @@ private:
     QTimer m_threadsTimer;   // coalesces inbox refreshes
     QTimer m_messagesTimer;  // coalesces open-thread refreshes
     QTimer m_searchTimer;
+    QTimer m_detailTimer;    // coalesces open-thread detail refreshes (pins)
+    qint64 m_revealId = 0;
     QTimer m_clock;          // keeps "Yesterday" / weekday labels right
     QNetworkReply *m_threadsReply = nullptr;
 

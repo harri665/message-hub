@@ -25,6 +25,7 @@ import (
 	_ "github.com/lib/pq"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waCompanionReg"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
@@ -222,6 +223,16 @@ func (a *App) handleEvent(raw any) {
 		if evt.Name != nil {
 			a.emit(ctx, map[string]any{"type": "chat", "chat": evt.JID.String(), "name": evt.Name.Name, "isGroup": true})
 		}
+	case *events.Archive:
+		// Archived or unarchived on the phone or another device (or reported by the full app-state sync).
+		if evt.Action == nil || evt.JID.Server == types.BroadcastServer || evt.JID.Server == types.NewsletterServer {
+			break
+		}
+		chat := evt.JID.ToNonAD()
+		if chat.Server == types.HiddenUserServer {
+			chat = a.toPN(ctx, chat, types.EmptyJID)
+		}
+		a.emit(ctx, map[string]any{"type": "archive", "chat": chat.String(), "archived": evt.Action.GetArchived(), "fromFullSync": evt.FromFullSync})
 	case *events.Picture:
 		// A contact or group changed (or removed) its photo: tell the hub to fetch it again.
 		a.emit(ctx, map[string]any{"type": "picture", "address": a.address(ctx, evt.JID, types.EmptyJID), "chat": evt.JID.String()})
@@ -520,6 +531,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /send-media", a.auth(a.handleSendMedia))
 	mux.HandleFunc("POST /read", a.auth(a.handleRead))
 	mux.HandleFunc("POST /mute", a.auth(a.handleMute))
+	mux.HandleFunc("POST /archive", a.auth(a.handleArchive))
 	mux.HandleFunc("GET /media", a.auth(a.handleMedia))
 	mux.HandleFunc("GET /avatar", a.auth(a.handleAvatar))
 	return mux
@@ -792,6 +804,49 @@ func (a *App) handleMute(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.cli.Store.ChatSettings.PutMutedUntil(r.Context(), target, stored); err != nil {
 		a.log.Warnf("store mute: %v", err)
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleArchive archives or unarchives a chat on the WhatsApp account (synced to the phone like any other device's
+// change). The last message's id, sender and time go along so WhatsApp knows which messages the change covers.
+func (a *App) handleArchive(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Chat          string `json:"chat"`
+		Archived      bool   `json:"archived"`
+		LastID        string `json:"lastId"`
+		LastFromMe    bool   `json:"lastFromMe"`
+		LastTimestamp int64  `json:"lastTimestamp"` // Unix milliseconds
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Chat == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("chat is required"))
+		return
+	}
+	target, err := types.ParseJID(req.Chat)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// One-to-one chats are keyed by LID in app state once the account has migrated.
+	if target.Server == types.DefaultUserServer {
+		if lid, err := a.cli.Store.LIDs.GetLIDForPN(r.Context(), target); err == nil && !lid.IsEmpty() {
+			target = lid
+		}
+	}
+	var last time.Time
+	var key *waCommon.MessageKey
+	if req.LastTimestamp > 0 {
+		last = time.UnixMilli(req.LastTimestamp)
+	}
+	if req.LastID != "" {
+		key = &waCommon.MessageKey{RemoteJID: proto.String(target.String()), FromMe: proto.Bool(req.LastFromMe), ID: proto.String(req.LastID)}
+	}
+	if err := a.cli.SendAppState(r.Context(), appstate.BuildArchive(target, req.Archived, last, key)); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	if err := a.cli.Store.ChatSettings.PutArchived(r.Context(), target, req.Archived); err != nil {
+		a.log.Warnf("store archive: %v", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
