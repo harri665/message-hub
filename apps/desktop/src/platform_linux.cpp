@@ -17,6 +17,8 @@
 #include <QStandardPaths>
 #include <malloc.h>
 #include <unistd.h>
+#include <csignal>
+#include <utility>
 
 namespace {
 // D-Bus signals need a receiving QObject with real slots.
@@ -249,6 +251,42 @@ bool Platform::restartInBackground() {
     char *args[] = {const_cast<char *>(exe.constData()), background, nullptr};
     execv(exe.constData(), args);
     return false;  // exec failed: carry on in this process
+}
+
+// Microphone recording through the sound server's own recorder: PipeWire's pw-record, else PulseAudio's parecord, else
+// ALSA's arecord. Each writes a WAV file and finishes it cleanly on SIGINT.
+namespace {
+QProcess *g_recorder = nullptr;
+}
+
+QString Platform::startRecording(const QString &wavPath) {
+    stopRecording();
+    const struct { const char *program; QStringList args; } tools[] = {
+        {"pw-record", {"--rate", "48000", "--channels", "1", wavPath}},
+        {"parecord", {"--channels=1", "--rate=48000", "--file-format=wav", wavPath}},
+        {"arecord", {"-q", "-f", "S16_LE", "-r", "48000", "-c", "1", wavPath}},
+    };
+    for (const auto &t : tools) {
+        const QString exe = QStandardPaths::findExecutable(QString::fromLatin1(t.program));
+        if (exe.isEmpty()) continue;
+        auto *p = new QProcess;
+        p->setProcessChannelMode(QProcess::ForwardedErrorChannel);
+        p->start(exe, t.args);
+        if (!p->waitForStarted(2000)) { delete p; continue; }
+        g_recorder = p;
+        return {};
+    }
+    return QStringLiteral("Couldn't record: install PipeWire (pw-record), PulseAudio (parecord) or ALSA (arecord)");
+}
+
+void Platform::stopRecording() {
+    if (!g_recorder) return;
+    QProcess *p = std::exchange(g_recorder, nullptr);
+    if (p->state() != QProcess::NotRunning) {
+        ::kill(pid_t(p->processId()), SIGINT);  // lets it write the end of the file
+        if (!p->waitForFinished(3000)) { p->kill(); p->waitForFinished(1000); }
+    }
+    delete p;
 }
 
 #include "platform_linux.moc"

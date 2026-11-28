@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QFileDialog>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QIcon>
 #include <QJSEngine>
@@ -21,6 +22,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <dwmapi.h>
+#include <mmsystem.h>
 
 namespace {
 const char *kRunKey = "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
@@ -99,7 +101,87 @@ public:
     Platform *platform;
 };
 
+// Microphone recording with the plain waveIn API: 16 kHz mono 16-bit PCM in a few rotating buffers, collected by a timer
+// on the main thread and written out as a WAV file at the end. The hub converts it to each service's voice note format.
+struct WaveRecorder {
+    static constexpr int kRate = 16000, kBuffers = 8, kBufferBytes = kRate * 2 / 10;  // 100 ms each
+    HWAVEIN in = nullptr;
+    WAVEHDR headers[kBuffers] = {};
+    QByteArray buffers[kBuffers];
+    QByteArray pcm;
+    QString path;
+    QTimer poll;
+
+    QString start(const QString &file) {
+        WAVEFORMATEX fmt = {};
+        fmt.wFormatTag = WAVE_FORMAT_PCM;
+        fmt.nChannels = 1;
+        fmt.nSamplesPerSec = kRate;
+        fmt.wBitsPerSample = 16;
+        fmt.nBlockAlign = 2;
+        fmt.nAvgBytesPerSec = kRate * 2;
+        const MMRESULT r = waveInOpen(&in, WAVE_MAPPER, &fmt, 0, 0, CALLBACK_NULL);
+        if (r != MMSYSERR_NOERROR) {
+            in = nullptr;
+            return r == MMSYSERR_BADDEVICEID || r == MMSYSERR_NODRIVER
+                       ? QStringLiteral("No microphone found")
+                       : QStringLiteral("Couldn't use the microphone. Check that apps may use it in Windows Settings > Privacy & security > Microphone.");
+        }
+        path = file;
+        pcm.clear();
+        for (int i = 0; i < kBuffers; ++i) {
+            buffers[i] = QByteArray(kBufferBytes, 0);
+            headers[i] = {};
+            headers[i].lpData = buffers[i].data();
+            headers[i].dwBufferLength = kBufferBytes;
+            waveInPrepareHeader(in, &headers[i], sizeof(WAVEHDR));
+            waveInAddBuffer(in, &headers[i], sizeof(WAVEHDR));
+        }
+        if (waveInStart(in) != MMSYSERR_NOERROR) {
+            finish(false);
+            return QStringLiteral("Couldn't start recording");
+        }
+        poll.setInterval(50);
+        QObject::connect(&poll, &QTimer::timeout, &poll, [this] { collect(true); }, Qt::UniqueConnection);
+        poll.start();
+        return {};
+    }
+    // Takes the buffers the driver has filled, and hands them back for more while still recording.
+    void collect(bool requeue) {
+        for (auto &h : headers) {
+            if (!(h.dwFlags & WHDR_DONE)) continue;
+            pcm.append(h.lpData, int(h.dwBytesRecorded));
+            if (!requeue) continue;
+            h.dwFlags &= ~WHDR_DONE;
+            h.dwBytesRecorded = 0;
+            waveInAddBuffer(in, &h, sizeof(WAVEHDR));
+        }
+        if (pcm.size() > kRate * 2 * 900) finish(true);  // 15 minutes at most
+    }
+    void finish(bool write) {
+        poll.stop();
+        if (!in) return;
+        waveInStop(in);
+        waveInReset(in);  // marks every queued buffer done
+        collect(false);
+        for (auto &h : headers) waveInUnprepareHeader(in, &h, sizeof(WAVEHDR));
+        waveInClose(in);
+        in = nullptr;
+        if (!write) return;
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly)) return;
+        auto u32 = [&](quint32 v) { f.write(reinterpret_cast<const char *>(&v), 4); };
+        auto u16 = [&](quint16 v) { f.write(reinterpret_cast<const char *>(&v), 2); };
+        f.write("RIFF"); u32(36 + quint32(pcm.size())); f.write("WAVE");
+        f.write("fmt "); u32(16); u16(1); u16(1); u32(kRate); u32(kRate * 2); u16(2); u16(16);
+        f.write("data"); u32(quint32(pcm.size()));
+        f.write(pcm);
+        pcm.clear();
+    }
+};
+
 struct Platform::Private {
+    WaveRecorder recorder;
     CaptionFilter *filter = nullptr;
     QSystemTrayIcon *tray = nullptr;
     QMenu *menu = nullptr;
@@ -316,3 +398,10 @@ void Platform::raise(QQuickWindow *w) {
 void Platform::trimMemory() { SetProcessWorkingSetSize(GetCurrentProcess(), SIZE_T(-1), SIZE_T(-1)); }
 
 bool Platform::restartInBackground() { return false; }
+
+QString Platform::startRecording(const QString &wavPath) {
+    d->recorder.finish(false);
+    return d->recorder.start(wavPath);
+}
+
+void Platform::stopRecording() { d->recorder.finish(true); }

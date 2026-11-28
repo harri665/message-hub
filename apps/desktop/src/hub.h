@@ -47,6 +47,10 @@ class Hub : public QObject {
     // Messages the hub will send later in the open chat (and failed ones, with their error).
     Q_PROPERTY(JsonListModel *scheduled READ scheduled CONSTANT)
     Q_PROPERTY(QString hubTimeZone READ hubTimeZone NOTIFY hubTimeZoneChanged)
+    // Who is typing in the open chat: "" for nobody, "typing" in a 1:1 chat, "Ana is typing" in a group.
+    Q_PROPERTY(QString typingLabel READ typingLabel NOTIFY typingChanged)
+    Q_PROPERTY(bool typingAudio READ typingAudio NOTIFY typingChanged)  // recording a voice message rather than typing
+    Q_PROPERTY(bool recording READ recording NOTIFY recordingChanged)    // I am recording a voice message
 
 public:
     static Hub *instance();
@@ -62,6 +66,9 @@ public:
     JsonListModel *results() { return &m_resultModel; }
     JsonListModel *scheduled() { return &m_scheduledModel; }
     QString hubTimeZone() const { return m_hubZone; }
+    QString typingLabel() const;
+    bool typingAudio() const;
+    bool recording() const { return m_recording; }
     QString filter() const { return m_filter; }
     void setFilter(const QString &f);
     QString currentTid() const { return m_tid; }
@@ -82,8 +89,16 @@ public:
     Q_INVOKABLE void loadOlder();
     Q_INVOKABLE void send(const QString &text, int conversationId, int replyToId);
     Q_INVOKABLE void retry(const QString &localKey);
+    // The system's file picker; the chosen files come back through filesChosen() (the composer stages them).
     Q_INVOKABLE void pickFile(int conversationId);
-    Q_INVOKABLE void sendFiles(const QList<QUrl> &files, int conversationId);
+    // Sends files one after another; the caption goes with the last one.
+    Q_INVOKABLE void sendFiles(const QList<QUrl> &files, int conversationId, const QString &caption = {});
+    // What the clipboard holds as files: copied files, or a copied picture saved as a PNG. Empty when it holds text.
+    Q_INVOKABLE QList<QUrl> pasteFiles();
+    // Voice messages: records the microphone until stopRecording(); send = false throws the recording away.
+    // The hub turns it into each service's voice note (iMessage audio message, WhatsApp voice note).
+    Q_INVOKABLE void startRecording(int conversationId);
+    Q_INVOKABLE void stopRecording(bool send);
     Q_INVOKABLE void openAttachment(qint64 id, const QString &filename);
     // The in-app image viewer (imageviewer.cpp): save a photo with the system's Save As dialog, copy it to the clipboard,
     // fetch the original file (originalReady() gives its path, for animated GIFs), and remember the real size of photos
@@ -93,7 +108,6 @@ public:
     Q_INVOKABLE void fetchOriginal(qint64 id);
     Q_INVOKABLE QSize knownImageSize(qint64 id) const { return m_imageSizes.value(id); }
     Q_INVOKABLE void noteImageSize(qint64 id, int w, int h) { if (w > 0 && h > 0) m_imageSizes.insert(id, QSize(w, h)); }
-    Q_INVOKABLE void pinMessage(qint64 id, bool pin);
     // Scheduled messages: the hub sends them at whenMs (milliseconds since the epoch), so the app can be closed. scheduleResult() reports the outcome.
     Q_INVOKABLE void schedule(const QString &text, int conversationId, int replyToId, qint64 whenMs);
     Q_INVOKABLE void editScheduled(qint64 id, const QString &text, qint64 whenMs);
@@ -103,6 +117,19 @@ public:
     Q_INVOKABLE QVariantList quickTimes() const;           // [{ label, time, ms }]: later today 18:00, tomorrow 9:00, Monday 9:00
     Q_INVOKABLE QString localTimeZone() const;
     Q_INVOKABLE QString inHubZone(qint64 whenMs) const;    // that moment as the hub's TIME_ZONE shows it
+    // Pin a chat to the top of the list, or unpin it (kept in the hub, so every app shows the same pins).
+    Q_INVOKABLE void pinThread(const QString &tid, bool pin);
+    // Mute a chat (hours 0: until unmuted) or unmute it. WhatsApp chats are muted on the phone too.
+    Q_INVOKABLE void muteThread(const QString &tid, bool mute, int hours);
+    // Reactions: the ones a message's service can send (iMessage's tapbacks, a row of WhatsApp emoji), and sending
+    // mine (an empty emoji takes mine away).
+    Q_INVOKABLE QStringList reactionChoices(const QString &service) const;
+    Q_INVOKABLE void react(qint64 id, const QString &emoji);
+    // My typing indicator in a chat; the composer repeats "typing" every few seconds while keys are pressed.
+    Q_INVOKABLE void sendTyping(const QString &tid, int conversationId, bool typing, bool audio = false);
+    // Unsent text per chat, kept on disk with the session. The chat list shows it as "Draft: ...".
+    Q_INVOKABLE QString draft(const QString &tid) const { return m_drafts.value(tid); }
+    Q_INVOKABLE void setDraft(const QString &tid, const QString &text);
     // Archive or unarchive a whole chat (the hub applies it to every chat of the person, and to WhatsApp).
     Q_INVOKABLE void archiveThread(const QString &tid, bool archive);
     // Switch the sidebar between the inbox and the archived chats.
@@ -159,6 +186,9 @@ signals:
     void linkPreviewReady(qint64 messageId);
     void hubTimeZoneChanged();
     void scheduleResult(bool ok, const QString &error);
+    void typingChanged();
+    void recordingChanged();
+    void filesChosen(const QList<QUrl> &files, int conversationId);
 
 private:
     Hub();
@@ -187,6 +217,13 @@ private:
     void moveToTop(const QString &tid, const QString &text);
     void search(const QString &q);
     void scheduleThreads(int ms);
+    void sortThreads();
+    void redecorateThreads();
+    void uploadFile(const QString &path, int conversationId, const QString &caption, bool voice);
+    void reportActivity();
+    void loadDrafts();
+    void loadReactions();
+    void dropTyping(const QString &tid, const QString &who = {});
 
     void connectLive();
     void onLive(const QString &text);
@@ -244,5 +281,17 @@ private:
     QHash<qint64, QSize> m_imageSizes;
     QHash<qint64, QVariantMap> m_links;
     QSet<qint64> m_linksAsked;
+
+    QVariantMap m_reactionSets;  // network -> emoji the hub can send
+    struct Typist { QString who; QString name; bool audio; qint64 until; };
+    QHash<QString, QList<Typist>> m_typing;  // tid -> who is typing there
+    QTimer m_typingSweep;
+    QTimer m_activityTimer;     // repeats "this app is in use" for WhatsApp's online status
+    QHash<QString, QString> m_drafts;
+    QTimer m_draftsTimer;       // coalesces writes of drafts.json
+    bool m_recording = false;
+    int m_recordConv = 0;
+    qint64 m_recordStart = 0;
+    QString m_recordPath;
     QString linkImagePath(qint64 messageId, const QString &kind) const;
 };

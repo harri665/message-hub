@@ -104,7 +104,7 @@ Rectangle {
 
     Rectangle {
         id: popup
-        visible: f.popupOpen || (f.completion.items && f.completion.items.length > 0)
+        visible: f.popupOpen || !!(f.completion.items && f.completion.items.length > 0)
         z: 100
         y: f.height + 4
         width: f.width

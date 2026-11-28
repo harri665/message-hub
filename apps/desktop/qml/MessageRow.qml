@@ -27,15 +27,15 @@ Item {
     required property string replyBody
     required property bool unsent
     required property bool edited
-    required property bool pinned
+    required property string network
     property real flashId: 0
     readonly property bool flash: flashId !== 0 && Number(id) === flashId
-    signal pinRequested(var id, bool pin)
     signal imageRequested(var id)  // a photo was clicked: the window shows it in the image viewer
     property bool group: false
 
     signal replyRequested(var id, string name, string body)
-    signal menuRequested(Item item, real x, real y, var entries)
+    // entries: the menu's rows; reactions: { choices, mine, pick } for the row of reactions on top, or null.
+    signal menuRequested(Item item, real x, real y, var entries, var reactions)
 
     readonly property real side: 14
     readonly property real indent: group && !fromMe ? 36 : 0
@@ -45,16 +45,26 @@ Item {
 
     height: col.height + (tail ? 8 : 2)
 
+    readonly property bool canAct: !pending && kind !== "system"
+    // The reactions this message's service can send, with mine marked; null when it can't take one.
+    function reactionSet() {
+        if (!row.canAct || row.unsent) return null;
+        const choices = Hub.reactionChoices(row.network);
+        if (!choices.length) return null;
+        let mine = "";
+        for (const r of row.reactions) if (r.fromMe) mine = r.emoji;
+        return { choices: choices, mine: mine, pick: emoji => Hub.react(row.id, emoji) };
+    }
+    function reply() { row.replyRequested(row.id, row.fromMe ? "You" : row.senderName, row.body); }
+    // Right-click: the reactions on top, then Reply, Copy and the attachments.
     function openMenu(item, x, y) {
         const entries = [];
-        if (!row.pending && row.kind !== "system")
-            entries.push({ label: "Reply", action: () => row.replyRequested(row.id, row.fromMe ? "You" : row.senderName, row.body) });
-        if (!row.pending && !row.unsent && row.kind === "text")
-            entries.push({ label: row.pinned ? "Unpin" : "Pin", action: () => row.pinRequested(row.id, !row.pinned) });
-        if (row.body) entries.push({ label: "Copy", action: () => Hub.copyText(row.body) });
+        if (row.canAct) entries.push({ label: "Reply", action: () => row.reply() });
+        if (row.body && !row.unsent) entries.push({ label: "Copy", action: () => Hub.copyText(row.body) });
         for (const a of row.attachments)
             entries.push({ label: "Open " + (a.filename || "Attachment"), action: () => Hub.openAttachment(a.id, a.filename || "") });
-        if (entries.length) row.menuRequested(item, x, y, entries);
+        const reacts = row.reactionSet();
+        if (entries.length || reacts) row.menuRequested(item, x, y, entries, reacts);
     }
 
     Column {
@@ -178,7 +188,7 @@ Item {
                                     Glyph { anchors.horizontalCenter: parent.horizontalCenter; name: "photo"; color: Theme.text3; width: 22; height: 22 }
                                     Text {
                                         anchors.horizontalCenter: parent.horizontalCenter
-                                        text: photo.status === Image.Error ? "Photo unavailable · Retry" : ""
+                                        text: photo.status === Image.Error ? "Photo unavailable Â· Retry" : ""
                                         color: Theme.text2
                                         font.pixelSize: 11
                                     }
@@ -269,19 +279,6 @@ Item {
                     border.color: Theme.accent
                     Behavior on border.width { NumberAnimation { duration: 250 } }
 
-                    Rectangle {
-                        visible: row.pinned
-                        width: 18
-                        height: 18
-                        radius: 9
-                        x: row.fromMe ? -6 : parent.width - 12
-                        y: parent.height - 12
-                        color: Theme.dark ? "#48484A" : "#DCDCE0"
-                        border.width: 2
-                        border.color: Theme.base
-                        Glyph { anchors.centerIn: parent; name: "pin"; width: 10; height: 10; color: Theme.accent; stroke: 1.2 }
-                    }
-
                     Column {
                         id: inner
                         width: parent.width
@@ -355,6 +352,40 @@ Item {
                     font.pixelSize: 12
                     topPadding: 4
                     bottomPadding: 4
+                }
+            }
+
+            // React and Reply beside the message while the pointer is over it (the same as its right-click menu).
+            HoverHandler { id: hover }
+            Row {
+                id: actions
+                visible: hover.hovered && row.canAct
+                layoutDirection: row.fromMe ? Qt.RightToLeft : Qt.LeftToRight
+                spacing: 4
+                x: row.fromMe ? stack.x - width - 8 : stack.x + stack.width + 8
+                y: stack.y + stack.height - height - 2
+                Repeater {
+                    model: [{ label: "React", react: true }, { label: "Reply", react: false }]
+                    delegate: Rectangle {
+                        id: pill
+                        required property var modelData
+                        visible: !modelData.react || (!row.unsent && Hub.reactionChoices(row.network).length > 0)
+                        width: pillText.implicitWidth + 16
+                        height: 22
+                        radius: 11
+                        color: pillMa.containsMouse ? Theme.ctrlSel : Theme.ctrl
+                        Text { id: pillText; anchors.centerIn: parent; text: pill.modelData.label; color: Theme.text2; font.pixelSize: 11 }
+                        MouseArea {
+                            id: pillMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                if (pill.modelData.react) row.menuRequested(pill, 0, pill.height + 4, [], row.reactionSet());
+                                else row.reply();
+                            }
+                        }
+                    }
                 }
             }
 

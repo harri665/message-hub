@@ -13,18 +13,8 @@ Item {
     readonly property bool open: Hub.currentTid.length > 0
     readonly property bool group: !!Hub.current.isGroup
 
-    // ---- pinned messages ----
-    readonly property var pins: Hub.current.pins ?? []
-    property int pinIndex: 0
     property real flashId: 0
     signal imageRequested(var id)
-    readonly property int pinShown: pins.length ? Math.min(pinIndex, pins.length - 1) : 0
-    onPinsChanged: if (pinIndex >= pins.length) pinIndex = 0
-    function showPin(i) {
-        if (!pins.length) return;
-        pinIndex = i;
-        Hub.revealMessage(pins[i].id);
-    }
     Connections {
         target: Hub
         function onRevealRequested(row, id) {
@@ -43,7 +33,6 @@ Item {
     function showNewest() {
         if (Hub.currentTid === shownTid) return;
         shownTid = Hub.currentTid;
-        pinIndex = 0;
         replyTo = null;
         list.positionViewAtBeginning();
         list.follow = true;
@@ -111,70 +100,12 @@ Item {
         font.pixelSize: 15
     }
 
-    // ---- pinned bar ----
-    Rectangle {
-        id: pinBar
-        visible: view.open && view.pins.length > 0
-        anchors.top: bar.bottom
-        width: parent.width
-        height: visible ? 44 : 0
-        z: 1
-        color: Theme.glass ? Qt.rgba(Theme.bg.r, Theme.bg.g, Theme.bg.b, 0.85) : Theme.bg
-        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.sep }
-        Glyph { id: pinIcon; x: 16; anchors.verticalCenter: parent.verticalCenter; name: "pin"; width: 14; height: 14; color: Theme.accent }
-        Column {
-            anchors.verticalCenter: parent.verticalCenter
-            x: 42
-            width: parent.width - 42 - unpinBtn.width - 24
-            Text {
-                width: parent.width
-                elide: Text.ElideRight
-                color: Theme.accent
-                font.pixelSize: 11
-                font.family: Theme.boldFont
-                font.weight: Font.DemiBold
-                text: {
-                    if (!view.pins.length) return "";
-                    const p = view.pins[view.pinShown];
-                    return (view.pins.length > 1 ? "Pinned " + (view.pinShown + 1) + " of " + view.pins.length : "Pinned") + "  " + (p.sender ?? "You");
-                }
-            }
-            Text {
-                width: parent.width
-                elide: Text.ElideRight
-                color: Theme.text
-                font.pixelSize: 12
-                text: {
-                    if (!view.pins.length) return "";
-                    const p = view.pins[view.pinShown];
-                    return p.text ? p.text.replace(/\s+/g, " ") : (p.hasAttachment ? "Attachment" : "Message");
-                }
-            }
-        }
-        MouseArea {
-            anchors.fill: parent
-            anchors.rightMargin: unpinBtn.width + 20
-            cursorShape: Qt.PointingHandCursor
-            onClicked: view.showPin((view.pinShown + 1) % view.pins.length)
-        }
-        Text {
-            id: unpinBtn
-            anchors.right: parent.right
-            anchors.rightMargin: 16
-            anchors.verticalCenter: parent.verticalCenter
-            text: "Unpin"
-            color: Theme.accent
-            font.pixelSize: 12
-            MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor; onClicked: Hub.pinMessage(view.pins[view.pinShown].id, false) }
-        }
-    }
-
     // ---- messages (newest at the bottom; the list runs bottom-to-top so new rows never shift the view) ----
     ListView {
         id: list
         objectName: "messageList"
         visible: view.open
-        anchors.top: pinBar.visible ? pinBar.bottom : bar.bottom
+        anchors.top: bar.bottom
         anchors.bottom: composer.top
         width: parent.width
         clip: true
@@ -201,6 +132,54 @@ Item {
                     onMenuRequested: (item, x, y, entries) => {
                         const p = item.mapToItem(view.menu, x, y);
                         view.menu.open(p.x, p.y, entries);
+                    }
+                }
+            }
+            // Someone is typing (or recording a voice message): three dots in a bubble, newest of all.
+            Item {
+                width: list.width
+                height: Hub.typingLabel.length ? typingCol.height + 6 : 0
+                visible: height > 0
+                Column {
+                    id: typingCol
+                    x: 14
+                    y: 6
+                    spacing: 2
+                    Text {
+                        visible: !!Hub.current.isGroup || Hub.typingAudio
+                        x: 12
+                        text: Hub.typingLabel
+                        color: Theme.text2
+                        font.pixelSize: 11
+                    }
+                    Rectangle {
+                        width: 58
+                        height: 34
+                        radius: 17
+                        color: Theme.bubbleIn
+                        Row {
+                            anchors.centerIn: parent
+                            spacing: 5
+                            Repeater {
+                                model: 3
+                                delegate: Rectangle {
+                                    id: dot
+                                    required property int index
+                                    width: 8
+                                    height: 8
+                                    radius: 4
+                                    color: Theme.text2
+                                    SequentialAnimation on opacity {
+                                        running: Hub.typingLabel.length > 0
+                                        loops: Animation.Infinite
+                                        PauseAnimation { duration: dot.index * 160 }
+                                        NumberAnimation { from: 0.35; to: 1; duration: 320 }
+                                        NumberAnimation { from: 1; to: 0.35; duration: 320 }
+                                        PauseAnimation { duration: (2 - dot.index) * 160 + 200 }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -233,12 +212,11 @@ Item {
             width: list.width
             group: view.group
             flashId: view.flashId
-            onPinRequested: (id, pin) => Hub.pinMessage(id, pin)
             onImageRequested: id => view.imageRequested(id)
             onReplyRequested: (id, name, body) => { view.replyTo = { id: id, name: name, body: body }; composer.focusInput(); }
-            onMenuRequested: (item, x, y, entries) => {
+            onMenuRequested: (item, x, y, entries, reactions) => {
                 const p = item.mapToItem(view.menu, x, y);
-                view.menu.open(p.x, p.y, entries);
+                view.menu.open(p.x, p.y, entries, reactions);
             }
         }
     }
@@ -247,7 +225,7 @@ Item {
         anchors.fill: list
         enabled: view.open
         onDropped: drop => {
-            if (drop.hasUrls) Hub.sendFiles(drop.urls, composer.conversationId);
+            if (drop.hasUrls) composer.stage(drop.urls);  // shown in the message box, sent with Send
             drop.accept();
         }
         Rectangle {
@@ -258,7 +236,7 @@ Item {
             color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.12)
             border.width: 2
             border.color: Theme.accent
-            Text { anchors.centerIn: parent; text: "Drop to send"; color: Theme.accent; font.pixelSize: 15; font.family: Theme.boldFont; font.weight: Font.DemiBold }
+            Text { anchors.centerIn: parent; text: "Drop to add"; color: Theme.accent; font.pixelSize: 15; font.family: Theme.boldFont; font.weight: Font.DemiBold }
         }
     }
 

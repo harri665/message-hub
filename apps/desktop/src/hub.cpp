@@ -8,6 +8,8 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QHttpMultiPart>
+#include <QImage>
+#include <QMimeData>
 #include <QJSEngine>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -158,11 +160,15 @@ Hub *Hub::create(QQmlEngine *, QJSEngine *) {
 }
 
 Hub::Hub()
-    : m_threadModel({"tid", "title", "initials", "photo", "time", "preview", "unread", "service", "isGroup", "muted"}, "tid"),
-      m_resultModel({"key", "tid", "title", "initials", "photo", "time", "preview", "unread", "service", "isGroup", "muted"}, "key"),
+    : m_threadModel({"tid", "title", "initials", "photo", "time", "preview", "unread", "service", "isGroup", "muted", "pinned",
+                     "lastPinned", "typing", "draft"},
+                    "tid"),
+      m_resultModel({"key", "tid", "title", "initials", "photo", "time", "preview", "unread", "service", "isGroup", "muted", "pinned",
+                     "lastPinned", "typing", "draft"},
+                    "key"),
       m_messageModel({"key", "id", "fromMe", "kind", "html", "body", "jumbo", "time", "service", "senderName", "showName",
                       "separator", "tail", "statusText", "failed", "pending", "attachments", "reactions", "replyName",
-                      "replyBody", "unsent", "edited", "pinned"},
+                      "replyBody", "unsent", "edited", "network"},
                      "key"),
       m_scheduledModel({"key", "id", "text", "status", "error", "service", "sendMs", "retrying"}, "key") {
     m_nam.setTransferTimeout(60000);
@@ -188,6 +194,33 @@ Hub::Hub()
         if (!m_tid.isEmpty()) refreshScheduled();  // also keeps the "tomorrow" in their labels right
     });
     m_clock.start();
+    // Typing indicators expire on their own (the other side may never say it stopped).
+    m_typingSweep.setInterval(2000);
+    connect(&m_typingSweep, &QTimer::timeout, this, [this] {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        bool changed = false;
+        for (auto it = m_typing.begin(); it != m_typing.end();) {
+            const auto before = it->size();
+            it->removeIf([now](const Typist &t) { return t.until < now; });
+            changed |= it->size() != before;
+            it = it->isEmpty() ? m_typing.erase(it) : std::next(it);
+        }
+        if (m_typing.isEmpty()) m_typingSweep.stop();
+        if (changed) { redecorateThreads(); emit typingChanged(); }
+    });
+    m_activityTimer.setInterval(30000);
+    connect(&m_activityTimer, &QTimer::timeout, this, &Hub::reportActivity);
+    m_draftsTimer.setSingleShot(true);
+    m_draftsTimer.setInterval(500);
+    connect(&m_draftsTimer, &QTimer::timeout, this, [this] {
+        QDir().mkpath(QFileInfo(cacheFile("drafts.json")).absolutePath());
+        QSaveFile f(cacheFile("drafts.json"));
+        if (!f.open(QIODevice::WriteOnly)) return;
+        QJsonObject o;
+        for (auto it = m_drafts.cbegin(); it != m_drafts.cend(); ++it) o.insert(it.key(), it.value());
+        f.write(QJsonDocument(o).toJson(QJsonDocument::Compact));
+        f.commit();
+    });
     connect(Theme::instance(), &Theme::changed, this, [this] {
         for (auto &t : m_allThreads) t = decorateThread(t);
         rebuildThreadModel();
@@ -200,6 +233,7 @@ Hub::Hub()
         emit onlineChanged();
         // Catch up on anything missed while disconnected.
         scheduleThreads(0);
+        reportActivity();
         if (!m_tid.isEmpty()) m_messagesTimer.start();
     });
     connect(&m_ws, &QWebSocket::disconnected, this, [this] {
@@ -228,6 +262,7 @@ Hub::Hub()
     connect(Theme::instance(), &Theme::glassModeChanged, this, &Hub::writeConfig);
 
     // Show the last inbox at once; the hub's answer replaces it when it arrives.
+    if (signedIn()) loadDrafts();
     QFile f(cacheFile("threads.json"));
     if (signedIn() && f.open(QIODevice::ReadOnly)) applyThreads(toRows(QJsonDocument::fromJson(f.readAll())), false);
     if (signedIn()) {
@@ -357,6 +392,7 @@ void Hub::login(const QString &serverIn, const QString &password) {
         for (const auto &c : cookies) {
             if (c.name() != "mh_session") continue;
             setToken(QString::fromUtf8(c.value()));
+            loadDrafts();
             loadThreads();
             connectLive();
             return;
@@ -382,6 +418,11 @@ void Hub::signedOut() {
     rebuildThreadModel();
     m_links.clear();
     m_linksAsked.clear();
+    m_drafts.clear();
+    m_draftsTimer.stop();
+    m_typing.clear();
+    m_reactionSets.clear();
+    if (m_recording) stopRecording(false);
     QDir(cacheFile({})).removeRecursively();  // cached messages belong to the session
     setToken({});
 }
@@ -404,6 +445,7 @@ void Hub::loadThreads() {
         scheduleThreads(1000);
         return;
     }
+    if (m_reactionSets.isEmpty()) loadReactions();
     m_threadsReply = call("GET", "/api/threads?limit=300");
     handle(m_threadsReply, [this](const QJsonDocument &doc) {
         m_threadsReply = nullptr;
@@ -449,7 +491,7 @@ void Hub::archiveThread(const QString &tid, bool archive) {
     // Move it between the lists at once; the hub's answer settles the real state.
     auto &from = m_showArchived ? m_archivedThreads : m_allThreads;
     for (int i = 0; i < from.size(); ++i)
-        if (from.at(i).value("tid") == tid) { from.removeAt(i); break; }
+        if (from.at(i).value("tid") == tid) { from.removeAt(i); break; }  // (archiving also unpins it, in the hub)
     m_archivedCount += archive ? 1 : -1;
     if (m_archivedCount < 0) m_archivedCount = 0;
     emit archivedChanged();
@@ -466,6 +508,12 @@ QVariantMap Hub::decorateThread(QVariantMap t) const {
     t["time"] = listTime(parseTime(t.value("last_at")));
     t["isGroup"] = t.value("is_group").toBool();
     t["muted"] = t.value("muted").toBool();  // muted on the phone: no notifications
+    t["pinned"] = !t.value("pinned_at").toString().isEmpty();
+    t["lastPinned"] = false;  // set for the list by rebuildThreadModel
+    const QString tid = t.value("tid").toString();
+    t["typing"] = m_typing.contains(tid);
+    // The open chat's draft is in its message box, so the list doesn't repeat it.
+    t["draft"] = tid == m_tid ? QString() : oneLine(m_drafts.value(tid), 80);
     t["service"] = t.value("last_service").toString().isEmpty() ? QStringLiteral("imessage") : t.value("last_service").toString();
 
     QString preview;
@@ -525,7 +573,11 @@ void Hub::rebuildThreadModel() {
         m_unreadTotal = unread;
         emit unreadTotalChanged();
     }
-    const auto &source = m_showArchived ? m_archivedThreads : m_allThreads;
+    QList<QVariantMap> source = m_showArchived ? m_archivedThreads : m_allThreads;
+    // A line under the last pinned chat parts the pins from the rest.
+    for (int i = 0; i < source.size(); ++i)
+        if (source.at(i).value("pinned").toBool() && (i + 1 == source.size() || !source.at(i + 1).value("pinned").toBool()))
+            source[i]["lastPinned"] = i + 1 < source.size();
     if (m_filter.trimmed().isEmpty()) {
         m_threadModel.setRows(source);
         return;
@@ -566,6 +618,7 @@ void Hub::search(const QString &q) {
                                 {"tid", m.value("tid")},
                                 {"title", m.value("thread_title").toString().isEmpty() ? who : m.value("thread_title")},
                                 {"initials", QString()}, {"photo", QString()}, {"unread", 0}, {"service", QString()}, {"isGroup", false}, {"muted", false},
+                                {"pinned", false}, {"lastPinned", false}, {"typing", false}, {"draft", QString()},
                                 {"time", listTime(parseTime(m.value("sent_at")))},
                                 {"preview", (who.isEmpty() ? QString() : who.section(' ', 0, 0) + ": ") + oneLine(m.value("body").toString())}};
         }
@@ -615,6 +668,9 @@ void Hub::openThread(const QString &tid) {
     refreshCurrent();
     refreshScheduled();
     markRead(tid);
+    redecorateThreads();  // the list shows drafts of every chat but the open one
+    emit typingChanged();
+    reportActivity();
 }
 
 void Hub::closeThread() {
@@ -629,6 +685,8 @@ void Hub::closeThread() {
     m_scheduledModel.setRows({});
     emit currentChanged();
     emit olderChanged();
+    emit typingChanged();
+    reportActivity();
 }
 
 void Hub::releaseView() {
@@ -802,7 +860,7 @@ void Hub::applyMessages() {
             {"replyBody", oneLine(m.value("reply_to_body").toString(), 120)},
             {"unsent", m.value("unsent").toBool()},
             {"edited", !m.value("edited_at").toString().isEmpty()},
-            {"pinned", !pending && !m.value("unsent").toBool() && !m.value("pinned_at").toString().isEmpty()},
+            {"network", m.value("service").toString() == "whatsapp" ? QStringLiteral("whatsapp") : QStringLiteral("apple")},
         };
         rows << row;
     }
@@ -915,17 +973,6 @@ QString Hub::inHubZone(qint64 whenMs) const {
     return QLocale().toString(d.date(), QStringLiteral("ddd, MMM d")) + QStringLiteral(" at ") + clockText(d);
 }
 
-void Hub::pinMessage(qint64 id, bool pin) {
-    if (m_tid.isEmpty()) return;
-    // Show it at once; the hub's answer (and the live event for other apps) settles the real state.
-    for (auto &m : m_msgs)
-        if (m.value("id").toLongLong() == id) m["pinned_at"] = pin ? isoNow() : QString();
-    applyMessages();
-    const QString path = QStringLiteral("/api/messages/%1/%2").arg(id).arg(pin ? "pin" : "unpin");
-    auto done = [this](const QJsonDocument &) { refreshCurrent(); refreshDetail(); };
-    handle(call("POST", path, "{}"), done, [this](int, const QString &e) { setError(e); refreshCurrent(); });
-}
-
 // Scroll target: wait for the message to be loaded (paging back through older messages), then tell the view its row.
 void Hub::revealMessage(qint64 id) {
     m_revealId = id;
@@ -950,6 +997,7 @@ void Hub::setWindowActive(bool a) {
     if (a == m_windowActive) return;
     m_windowActive = a;
     emit windowActiveChanged();
+    reportActivity();
     if (a && !m_tid.isEmpty()) {
         markRead(m_tid);
         Platform::instance()->withdraw(m_tid);  // clear this chat's notification once it is on screen
@@ -1022,6 +1070,7 @@ void Hub::moveToTop(const QString &tid, const QString &text) {
             t["last_body"] = text; t["last_from_me"] = true; t["last_at"] = isoNow(); t["last_unsent"] = false;
             t["last_has_attachment"] = false; t["unread"] = 0;
             m_allThreads.prepend(decorateThread(t));
+            sortThreads();
             rebuildThreadModel();
             return;
         }
@@ -1064,60 +1113,97 @@ void Hub::retry(const QString &localKey) {
         const QVariantMap p = m_pending.at(i);
         if (p.value("localKey") != localKey || p.value("state") != "failed") continue;
         m_pending.removeAt(i);
-        if (p.value("isFile").toBool()) sendFiles({QUrl::fromLocalFile(p.value("path").toString())}, p.value("conversationId").toInt());
+        if (p.value("isFile").toBool()) {
+            uploadFile(p.value("path").toString(), p.value("conversationId").toInt(), p.value("caption").toString(), p.value("voice").toBool());
+            applyMessages();
+        }
         else send(p.value("body").toString(), p.value("conversationId").toInt(), p.value("replyToId").toInt());
         return;
     }
 }
 
-void Hub::sendFiles(const QList<QUrl> &files, int conversationId) {
+void Hub::sendFiles(const QList<QUrl> &files, int conversationId, const QString &captionIn) {
     if (m_tid.isEmpty()) return;
-    static int counter = 0;
-    static QMimeDatabase mimes;
+    QStringList paths;
     for (const QUrl &u : files) {
         const QString path = u.isLocalFile() ? u.toLocalFile() : u.toString();
-        QFileInfo fi(path);
-        if (!fi.isFile()) continue;
-        auto *file = new QFile(path);
-        if (!file->open(QIODevice::ReadOnly)) { delete file; setError("Could not read " + fi.fileName()); continue; }
-
-        const QString key = "f" + QString::number(++counter);
-        m_pending.prepend({{"localKey", key}, {"from_me", true}, {"kind", "text"}, {"body", QString::fromUtf8("\U0001F4CE ") + fi.fileName()},
-                           {"sent_at", isoNow()}, {"state", "sending"}, {"service", serviceFor(m_detail, conversationId)},
-                           {"created", QDateTime::currentMSecsSinceEpoch()}, {"conversationId", conversationId},
-                           {"isFile", true}, {"path", path}, {"afterId", newestId()}});
-
-        auto *multi = new QHttpMultiPart(QHttpMultiPart::FormDataType);
-        if (conversationId) {  // fields first: the hub reads them before the file
-            QHttpPart part;
-            part.setHeader(QNetworkRequest::ContentDispositionHeader, "form-data; name=\"conversationId\"");
-            part.setBody(QByteArray::number(conversationId));
-            multi->append(part);
-        }
-        QHttpPart filePart;
-        filePart.setHeader(QNetworkRequest::ContentTypeHeader, mimes.mimeTypeForFile(fi).name());
-        QString name = fi.fileName();
-        name.replace('"', '_');
-        filePart.setHeader(QNetworkRequest::ContentDispositionHeader,
-                           QStringLiteral("form-data; name=\"file\"; filename=\"%1\"").arg(name).toUtf8());
-        filePart.setBodyDevice(file);
-        file->setParent(multi);
-        multi->append(filePart);
-
-        QNetworkReply *reply = m_nam.post(request("/api/threads/" + m_tid + "/send-file"), multi);
-        multi->setParent(reply);
-        const int gen = m_generation;
-        auto mark = [this, key, gen](const QString &state) {
-            if (gen != m_generation) return;
-            for (auto &x : m_pending)
-                if (x.value("localKey") == key) { x["state"] = state; x["created"] = QDateTime::currentMSecsSinceEpoch(); }
-            applyMessages();
-        };
-        ++m_writes;
-        handle(reply, [this, mark](const QJsonDocument &) { --m_writes; mark("sent"); m_messagesTimer.start(); },
-               [this, mark](int, const QString &e) { --m_writes; mark("failed"); setError(e); });
+        if (QFileInfo(path).isFile()) paths << path;
     }
+    const QString caption = captionIn.trimmed();
+    if (paths.isEmpty()) {
+        if (!caption.isEmpty()) send(caption, conversationId, 0);
+        return;
+    }
+    for (int i = 0; i < paths.size(); ++i) uploadFile(paths.at(i), conversationId, i + 1 == paths.size() ? caption : QString(), false);
+    if (!caption.isEmpty()) moveToTop(m_tid, caption);
     applyMessages();
+}
+
+void Hub::uploadFile(const QString &path, int conversationId, const QString &caption, bool voice) {
+    static int counter = 0;
+    static QMimeDatabase mimes;
+    QFileInfo fi(path);
+    auto *file = new QFile(path);
+    if (!file->open(QIODevice::ReadOnly)) { delete file; setError("Could not read " + fi.fileName()); return; }
+
+    const QString key = "f" + QString::number(++counter);
+    const QString label = voice ? QString::fromUtf8("\U0001F3A4 Voice message") : QString::fromUtf8("\U0001F4CE ") + fi.fileName();
+    m_pending.prepend({{"localKey", key}, {"from_me", true}, {"kind", "text"}, {"body", caption.isEmpty() ? label : label + '\n' + caption},
+                       {"sent_at", isoNow()}, {"state", "sending"}, {"service", serviceFor(m_detail, conversationId)},
+                       {"created", QDateTime::currentMSecsSinceEpoch()}, {"conversationId", conversationId},
+                       {"isFile", true}, {"path", path}, {"caption", caption}, {"voice", voice}, {"afterId", newestId()}});
+
+    auto *multi = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+    auto field = [multi](const char *name, const QByteArray &value) {  // fields first: the hub reads them before the file
+        QHttpPart part;
+        part.setHeader(QNetworkRequest::ContentDispositionHeader, QByteArray("form-data; name=\"") + name + '"');
+        part.setBody(value);
+        multi->append(part);
+    };
+    if (conversationId) field("conversationId", QByteArray::number(conversationId));
+    if (!caption.isEmpty()) field("caption", caption.toUtf8());
+    if (voice) field("voice", "true");
+    QHttpPart filePart;
+    filePart.setHeader(QNetworkRequest::ContentTypeHeader, mimes.mimeTypeForFile(fi).name());
+    QString name = fi.fileName();
+    name.replace('"', '_');
+    filePart.setHeader(QNetworkRequest::ContentDispositionHeader,
+                       QStringLiteral("form-data; name=\"file\"; filename=\"%1\"").arg(name).toUtf8());
+    filePart.setBodyDevice(file);
+    file->setParent(multi);
+    multi->append(filePart);
+
+    QNetworkReply *reply = m_nam.post(request("/api/threads/" + m_tid + "/send-file"), multi);
+    multi->setParent(reply);
+    const int gen = m_generation;
+    auto mark = [this, key, gen](const QString &state) {
+        if (gen != m_generation) return;
+        for (auto &x : m_pending)
+            if (x.value("localKey") == key) { x["state"] = state; x["created"] = QDateTime::currentMSecsSinceEpoch(); }
+        applyMessages();
+    };
+    ++m_writes;
+    handle(reply, [this, mark](const QJsonDocument &) { --m_writes; mark("sent"); m_messagesTimer.start(); scheduleThreads(1500); },
+           [this, mark](int, const QString &e) { --m_writes; mark("failed"); setError(e); });
+}
+
+QList<QUrl> Hub::pasteFiles() {
+    const QMimeData *md = QGuiApplication::clipboard()->mimeData();
+    if (!md) return {};
+    QList<QUrl> out;
+    if (md->hasUrls())
+        for (const QUrl &u : md->urls())
+            if (u.isLocalFile() && QFileInfo(u.toLocalFile()).isFile()) out << u;
+    if (!out.isEmpty() || !md->hasImage()) return out;
+    // A copied picture (a screenshot, an image copied from a browser): saved as a PNG to send like any file.
+    const QImage img = qvariant_cast<QImage>(md->imageData());
+    if (img.isNull()) return {};
+    static int n = 0;
+    const QString dir = cacheFile("paste/" + QString::number(QDateTime::currentMSecsSinceEpoch()) + '-' + QString::number(++n));
+    QDir().mkpath(dir);
+    const QString path = dir + "/image.png";
+    if (!img.save(path, "PNG")) { setError(QStringLiteral("Could not paste the picture")); return {}; }
+    return {QUrl::fromLocalFile(path)};
 }
 
 // The system's file picker. The files go to the chat that was open when it was asked for, if it still is.
@@ -1125,7 +1211,7 @@ void Hub::pickFile(int conversationId) {
     const QString tid = m_tid;
     Platform::instance()->pickFiles(
         QStringLiteral("Send a File"),
-        [this, tid, conversationId](const QList<QUrl> &urls) { if (tid == m_tid) sendFiles(urls, conversationId); },
+        [this, tid, conversationId](const QList<QUrl> &urls) { if (tid == m_tid) emit filesChosen(urls, conversationId); },
         [this](const QString &error) { setError(error); });
 }
 
@@ -1232,6 +1318,170 @@ void Hub::openLink(const QString &url) {
     if (u.scheme() == "http" || u.scheme() == "https" || u.scheme() == "mailto" || u.scheme() == "tel") QDesktopServices::openUrl(u);
 }
 
+// ---------- pins, mute, reactions, typing, drafts, voice ----------
+
+// Pinned chats first, in the order they were pinned; then the rest, newest first.
+void Hub::sortThreads() {
+    std::stable_sort(m_allThreads.begin(), m_allThreads.end(), [](const QVariantMap &a, const QVariantMap &b) {
+        const QString pa = a.value("pinned_at").toString(), pb = b.value("pinned_at").toString();
+        if (pa.isEmpty() != pb.isEmpty()) return !pa.isEmpty();
+        if (!pa.isEmpty()) return parseTime(pa) < parseTime(pb);
+        return parseTime(a.value("last_at")) > parseTime(b.value("last_at"));
+    });
+}
+
+void Hub::redecorateThreads() {
+    for (auto &t : m_allThreads) t = decorateThread(t);
+    for (auto &t : m_archivedThreads) t = decorateThread(t);
+    rebuildThreadModel();
+}
+
+void Hub::pinThread(const QString &tid, bool pin) {
+    for (auto &t : m_allThreads)
+        if (t.value("tid") == tid) {
+            if (pin == !t.value("pinned_at").toString().isEmpty()) return;
+            t["pinned_at"] = pin ? QVariant(isoNow()) : QVariant();
+            t = decorateThread(t);
+        }
+    sortThreads();
+    rebuildThreadModel();
+    handle(call("POST", QStringLiteral("/api/threads/%1/%2").arg(tid, pin ? "pin" : "unpin"), "{}"),
+           [this](const QJsonDocument &) { scheduleThreads(0); }, [this](int, const QString &e) { setError(e); scheduleThreads(0); });
+}
+
+void Hub::muteThread(const QString &tid, bool mute, int hours) {
+    for (auto &t : m_allThreads)
+        if (t.value("tid") == tid) { t["muted"] = mute; t = decorateThread(t); }
+    rebuildThreadModel();
+    QJsonObject body{{"muted", mute}};
+    body.insert("hours", mute && hours > 0 ? QJsonValue(hours) : QJsonValue());
+    handle(call("POST", "/api/threads/" + tid + "/mute", QJsonDocument(body).toJson()),
+           [this, tid](const QJsonDocument &) { scheduleThreads(0); if (tid == m_tid) refreshDetail(); },
+           [this](int, const QString &e) { setError(e); scheduleThreads(0); });
+}
+
+void Hub::loadReactions() {
+    handle(call("GET", "/api/reactions"), [this](const QJsonDocument &doc) {
+        m_reactionSets = doc.object().toVariantMap();
+        applyMessages();  // rows that were built without choices
+    });
+}
+
+QStringList Hub::reactionChoices(const QString &service) const {
+    return m_reactionSets.value(service == "whatsapp" ? QStringLiteral("whatsapp") : QStringLiteral("apple")).toStringList();
+}
+
+void Hub::react(qint64 id, const QString &emoji) {
+    // Show it at once; the hub's answer settles it (an error puts the real reactions back).
+    for (auto &m : m_msgs) {
+        if (m.value("id").toLongLong() != id) continue;
+        QVariantList list;
+        for (const auto &r : m.value("reactions").toList())
+            if (!r.toMap().value("fromMe").toBool()) list << r;
+        if (!emoji.isEmpty()) list << QVariantMap{{"emoji", emoji}, {"fromMe", true}, {"name", QString()}};
+        m["reactions"] = list;
+    }
+    applyMessages();
+    QJsonObject body{{"emoji", emoji.isEmpty() ? QJsonValue() : QJsonValue(emoji)}};
+    handle(call("POST", QStringLiteral("/api/messages/%1/react").arg(id), QJsonDocument(body).toJson()),
+           [this](const QJsonDocument &) { m_messagesTimer.start(); },
+           [this](int, const QString &e) { setError(e); refreshCurrent(); });
+}
+
+void Hub::sendTyping(const QString &tid, int conversationId, bool typing, bool audio) {
+    if (tid.isEmpty() || !conversationId || !signedIn()) return;
+    QJsonObject body{{"conversationId", conversationId}, {"typing", typing}, {"audio", audio}};
+    handle(call("POST", "/api/threads/" + tid + "/typing", QJsonDocument(body).toJson()), {});
+}
+
+QString Hub::typingLabel() const {
+    const auto list = m_typing.value(m_tid);
+    if (list.isEmpty()) return {};
+    const bool audio = typingAudio();
+    const QString verb = audio ? QStringLiteral("recording audio") : QStringLiteral("typing");
+    if (!m_detail.value("isGroup").toBool()) return verb;
+    QStringList names;
+    for (const auto &t : list) if (!t.name.isEmpty()) names << t.name.section(' ', 0, 0);
+    if (names.isEmpty()) return verb;
+    if (names.size() == 1) return names.first() + QStringLiteral(" is ") + verb;
+    const QString last = names.takeLast();
+    return names.join(QStringLiteral(", ")) + QStringLiteral(" and ") + last + QStringLiteral(" are ") + verb;
+}
+
+bool Hub::typingAudio() const {
+    for (const auto &t : m_typing.value(m_tid)) if (t.audio) return true;
+    return false;
+}
+
+void Hub::dropTyping(const QString &tid, const QString &who) {
+    auto it = m_typing.find(tid);
+    if (it == m_typing.end()) return;
+    if (who.isEmpty()) it->clear();
+    else it->removeIf([&](const Typist &t) { return t.who == who; });
+    if (it->isEmpty()) m_typing.erase(it);
+    redecorateThreads();
+    if (tid == m_tid) emit typingChanged();
+}
+
+// While the window is in front, the hub shows this device online on WhatsApp (and asks WhatsApp for typing in the open chat).
+void Hub::reportActivity() {
+    const bool active = m_windowActive && signedIn();
+    if (active) { if (!m_activityTimer.isActive()) m_activityTimer.start(); }
+    else m_activityTimer.stop();
+    if (m_ws.state() != QAbstractSocket::ConnectedState) return;
+    QJsonObject o{{"type", "activity"}, {"active", active}};
+    o.insert("tid", m_tid.isEmpty() ? QJsonValue() : QJsonValue(m_tid));
+    m_ws.sendTextMessage(QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact)));
+}
+
+void Hub::loadDrafts() {
+    m_drafts.clear();
+    QFile f(cacheFile("drafts.json"));
+    if (!f.open(QIODevice::ReadOnly)) return;
+    const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
+    for (auto it = o.begin(); it != o.end(); ++it)
+        if (!it.value().toString().trimmed().isEmpty()) m_drafts.insert(it.key(), it.value().toString());
+}
+
+void Hub::setDraft(const QString &tid, const QString &text) {
+    if (tid.isEmpty()) return;
+    const bool empty = text.trimmed().isEmpty();
+    if (empty ? !m_drafts.contains(tid) : m_drafts.value(tid) == text) return;
+    if (empty) m_drafts.remove(tid);
+    else m_drafts.insert(tid, text);
+    m_draftsTimer.start();
+    if (tid != m_tid) redecorateThreads();  // the open chat's draft isn't shown in the list
+}
+
+void Hub::startRecording(int conversationId) {
+    if (m_recording || m_tid.isEmpty()) return;
+    QDir().mkpath(cacheFile("voice"));
+    m_recordPath = cacheFile("voice/" + QString::number(QDateTime::currentMSecsSinceEpoch()) + ".wav");
+    const QString err = Platform::instance()->startRecording(m_recordPath);
+    if (!err.isEmpty()) { setError(err); return; }
+    m_recording = true;
+    m_recordConv = conversationId;
+    m_recordStart = QDateTime::currentMSecsSinceEpoch();
+    emit recordingChanged();
+    sendTyping(m_tid, conversationId, true, true);
+}
+
+void Hub::stopRecording(bool send) {
+    if (!m_recording) return;
+    Platform::instance()->stopRecording();
+    m_recording = false;
+    emit recordingChanged();
+    sendTyping(m_tid, m_recordConv, false, true);
+    // Under a second is a slip of the finger, as in Messages.
+    if (send && QDateTime::currentMSecsSinceEpoch() - m_recordStart >= 1000 && QFileInfo(m_recordPath).size() > 44) {
+        uploadFile(m_recordPath, m_recordConv, {}, true);
+        moveToTop(m_tid, QStringLiteral("Voice message"));
+        applyMessages();
+    } else {
+        QFile::remove(m_recordPath);
+    }
+}
+
 // ---------- live updates ----------
 
 void Hub::connectLive() {
@@ -1260,6 +1510,7 @@ void Hub::onLive(const QString &text) {
         const QVariantMap preview = ev.value("preview").toMap();
         const bool fromMe = ev.value("fromMe").toBool();
         if (inCurrent || (!tid.isEmpty() && tid == m_tid)) m_messagesTimer.start();
+        if (!fromMe && !tid.isEmpty()) dropTyping(tid);  // their message is here, so they stopped typing
         bool patched = false;
         if (!tid.isEmpty() && !preview.isEmpty()) {
             for (int i = 0; i < m_allThreads.size(); ++i) {
@@ -1275,6 +1526,7 @@ void Hub::onLive(const QString &text) {
                 const bool reading = tid == m_tid && m_windowActive;
                 if (!fromMe && !reading) t["unread"] = t.value("unread").toInt() + 1;
                 m_allThreads.prepend(decorateThread(t));
+                sortThreads();
                 rebuildThreadModel();
                 patched = true;
                 if (reading && !fromMe) markRead(tid);
@@ -1300,6 +1552,22 @@ void Hub::onLive(const QString &text) {
     } else if (type == "message-updated") {
         if (inCurrent) { m_messagesTimer.start(); m_detailTimer.start(); }
         scheduleThreads(3000);
+    } else if (type == "typing") {
+        const QString tid = ev.value("tid").toString();
+        if (tid.isEmpty()) return;
+        const QString who = ev.value("sender").toString().isEmpty() ? ev.value("conversationId").toString() : ev.value("sender").toString();
+        if (!ev.value("typing").toBool()) {
+            dropTyping(tid, who);
+            return;
+        }
+        // iMessage repeats nothing while someone types, so it gets longer before it expires than WhatsApp.
+        const qint64 until = QDateTime::currentMSecsSinceEpoch() + (ev.value("network").toString() == "whatsapp" ? 25000 : 60000);
+        auto &list = m_typing[tid];
+        list.removeIf([&](const Typist &t) { return t.who == who; });
+        list << Typist{who, ev.value("name").toString(), ev.value("audio").toBool(), until};
+        if (!m_typingSweep.isActive()) m_typingSweep.start();
+        redecorateThreads();
+        if (tid == m_tid) emit typingChanged();
     } else if (type == "conversation-updated") {
         scheduleThreads(1500);
     } else if (type == "scheduled") {

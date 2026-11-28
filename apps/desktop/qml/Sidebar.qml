@@ -175,7 +175,16 @@ Rectangle {
             onContextRequested: (x, y) => {
                 const p = threadRow.mapToItem(side.menu, x, y);
                 const archived = Hub.showArchived;
-                side.menu.open(p.x, p.y, [{ label: archived ? "Unarchive" : "Archive", action: () => Hub.archiveThread(threadRow.tid, !archived) }]);
+                const tid = threadRow.tid;
+                const items = [];
+                if (!archived) items.push({ label: threadRow.pinned ? "Unpin" : "Pin", action: () => Hub.pinThread(tid, !threadRow.pinned) });
+                if (threadRow.muted) items.push({ label: "Unmute", action: () => Hub.muteThread(tid, false, 0) });
+                else items.push({ label: "Mute", header: true },
+                                { label: "For 8 Hours", action: () => Hub.muteThread(tid, true, 8) },
+                                { label: "For 1 Week", action: () => Hub.muteThread(tid, true, 24 * 7) },
+                                { label: "Always", action: () => Hub.muteThread(tid, true, 0) });
+                items.push({ label: archived ? "Unarchive" : "Archive", action: () => Hub.archiveThread(tid, !archived) });
+                side.menu.open(p.x, p.y, items);
             }
         }
         // Thread rows animate into their new place when a message moves a chat to the top.

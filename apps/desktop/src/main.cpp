@@ -189,8 +189,24 @@ void App::dev(const QString &cmd) {
     else if (verb == "archive") Hub::instance()->archiveThread(arg, true);
     else if (verb == "unarchive") Hub::instance()->archiveThread(arg, false);
     else if (verb == "archived") Hub::instance()->setShowArchived(arg != "off");
-    else if (verb == "pin") Hub::instance()->pinMessage(arg.toLongLong(), true);
-    else if (verb == "unpin") Hub::instance()->pinMessage(arg.toLongLong(), false);
+    else if (verb == "pin") Hub::instance()->pinThread(arg, true);
+    else if (verb == "unpin") Hub::instance()->pinThread(arg, false);
+    else if (verb == "react") Hub::instance()->react(arg.section(' ', 0, 0).toLongLong(), arg.section(' ', 1));
+    else if (verb == "draft") Hub::instance()->setDraft(arg.section(' ', 0, 0), arg.section(' ', 1));
+    else if (verb == "record") {  // record start | send | cancel: a voice message in the open chat
+        const QVariantList convs = Hub::instance()->current().value("conversations").toList();
+        if (arg == "start") Hub::instance()->startRecording(convs.isEmpty() ? 0 : convs.first().toMap().value("id").toInt());
+        else Hub::instance()->stopRecording(arg == "send");
+    }
+    else if (verb == "paste") emit Hub::instance()->filesChosen(Hub::instance()->pasteFiles(), 0);  // as Ctrl+V with files does
+    // msgmenu <row>: right-click the message in that row of the open chat (0 is the newest).
+    else if (verb == "msgmenu" && w) {
+        if (auto *l = w->findChild<QObject *>("messageList")) {
+            QQuickItem *item = nullptr;
+            QMetaObject::invokeMethod(l, "itemAtIndex", Q_RETURN_ARG(QQuickItem *, item), Q_ARG(int, arg.toInt()));
+            if (item) QMetaObject::invokeMethod(item, "openMenu", Q_ARG(QVariant, QVariant::fromValue(item)), Q_ARG(QVariant, item->width() / 2), Q_ARG(QVariant, 10.0));
+        }
+    }
     else if (verb == "close") closeWindow();
     else if (verb == "login") Hub::instance()->login(arg.section(' ', 0, 0), arg.section(' ', 1));
     else if (verb == "logout") Hub::instance()->logout();

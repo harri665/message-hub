@@ -92,7 +92,7 @@ qt_add_resources(message-hub "emoji"
 target_include_directories(message-hub PRIVATE src)
 target_link_libraries(message-hub PRIVATE Qt6::Quick Qt6::Network Qt6::WebSockets)
 if(WIN32)
-  target_link_libraries(message-hub PRIVATE Qt6::Widgets dwmapi)
+  target_link_libraries(message-hub PRIVATE Qt6::Widgets dwmapi winmm)
 else()
   target_link_libraries(message-hub PRIVATE Qt6::DBus)
 endif()

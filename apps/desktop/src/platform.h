@@ -80,6 +80,11 @@ public:
     void saveFile(const QString &title, const QString &suggestedName, std::function<void(const QUrl &)> done,
                   std::function<void(const QString &)> failed);
 
+    // Records the default microphone into a WAV file until stopRecording() finishes it. Returns an error message to show
+    // (no microphone, access turned off, nothing to record with), or an empty string once recording has started.
+    QString startRecording(const QString &wavPath);
+    void stopRecording();
+
     // A new window was just created: set up its frame (Windows 11: system rounded corners and shadow, ready for glass).
     void prepareWindow(QQuickWindow *w);
     // Compositor glass behind the window. again: a repeat shortly after the window first appears, for compositors that
