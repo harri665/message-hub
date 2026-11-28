@@ -3,6 +3,7 @@ import path from 'node:path';
 import pg from 'pg';
 import { expireAvatar, RECHECK_MS, saveAvatar, touchAvatar } from '../avatars.js';
 import { config } from '../config.js';
+import { saveProvided, extractUrl } from '../linkpreview.js';
 import { q, q1 } from '../db.js';
 import {
   editMessage, emitLive, ingestMessage, markReceipts, setConversationRead, setReaction, unsendMessage,
@@ -15,7 +16,8 @@ interface WAMedia { kind: string; mime: string; filename?: string; size?: number
 
 type WAEvent =
   | { type: 'message'; id: string; chat: string; chatAddress?: string; isGroup: boolean; sender: string; senderName?: string;
-      fromMe: boolean; timestamp: number; text: string; replyTo?: string; media?: WAMedia; historical: boolean }
+      fromMe: boolean; timestamp: number; text: string; replyTo?: string; media?: WAMedia; historical: boolean;
+      link?: { url: string; title?: string; description?: string; thumbnail?: string } }
   | { type: 'reaction'; chat: string; target: string; sender: string; fromMe: boolean; emoji: string; timestamp: number }
   | { type: 'edit'; chat: string; target: string; text: string; timestamp: number }
   | { type: 'revoke'; chat: string; target: string }
@@ -285,6 +287,16 @@ export class WhatsApp {
             : [],
           historical: ev.historical,
         });
+        // The link preview WhatsApp sent along (title, description and a small thumbnail), kept for the link's card.
+        if (ev.link?.url && (ev.link.title || ev.link.thumbnail)) {
+          const url = extractUrl(ev.link.url);
+          if (url) {
+            await saveProvided(url, 'whatsapp', {
+              title: ev.link.title, description: ev.link.description,
+              image: ev.link.thumbnail ? Buffer.from(ev.link.thumbnail, 'base64') : null,
+            }).catch((e) => this.log.warn({ err: String(e) }, 'could not save WhatsApp link preview'));
+          }
+        }
         break;
       }
       case 'reaction':

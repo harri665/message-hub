@@ -6,6 +6,7 @@ Item {
     id: r
     property string source
     property real radius: 16
+    property bool flatBottom: false
     readonly property alias status: img.status
     readonly property alias implicitImageSize: img.sourceSize
     readonly property bool software: GraphicsInfo.api === GraphicsInfo.Software
@@ -28,6 +29,7 @@ Item {
         property variant source: img
         property size size: Qt.size(width, height)
         property real radius: r.radius
+        property real flatBottom: r.flatBottom ? 1 : 0
         fragmentShader: "qrc:/shaders/roundedimage.frag.qsb"
     }
 }

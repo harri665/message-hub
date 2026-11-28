@@ -103,7 +103,12 @@ QString richText(const QString &body) {
         out += body.mid(last, m.capturedStart() - last).toHtmlEscaped();
         const QString link = m.captured(0);
         const QString href = link.startsWith(QStringLiteral("www.")) ? "https://" + link : link;
-        out += QStringLiteral("<a href=\"%1\">%2</a>").arg(href.toHtmlEscaped(), link.toHtmlEscaped());
+        // A very long address shows shortened ("example.com/some/long/pa..."); the link itself stays whole.
+        QString shown = link;
+        shown.remove(QRegularExpression(QStringLiteral("^https?://(www\\.)?")));
+        if (shown.endsWith('/')) shown.chop(1);
+        if (shown.size() > 48) shown = shown.left(46) + QChar(0x2026);
+        out += QStringLiteral("<a href=\"%1\">%2</a>").arg(href.toHtmlEscaped(), shown.toHtmlEscaped());
         last = m.capturedEnd();
     }
     out += body.mid(last).toHtmlEscaped();
@@ -372,6 +377,8 @@ void Hub::signedOut() {
     m_archivedCount = m_archivedUnread = 0;
     emit archivedChanged();
     rebuildThreadModel();
+    m_links.clear();
+    m_linksAsked.clear();
     QDir(cacheFile({})).removeRecursively();  // cached messages belong to the session
     setToken({});
 }
@@ -1118,6 +1125,8 @@ void Hub::openAttachment(qint64 id, const QString &filename) {
 }
 
 void Hub::copyText(const QString &text) { QGuiApplication::clipboard()->setText(text); }
+
+QString Hub::linkHtml(const QString &text) const { return richText(text); }
 
 void Hub::openLink(const QString &url) {
     const QUrl u(url);

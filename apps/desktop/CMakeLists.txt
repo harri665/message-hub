@@ -27,7 +27,7 @@ qt_standard_project_setup(REQUIRES 6.5)
 qt_add_executable(message-hub
   src/main.cpp
   src/app.h
-  src/hub.h src/hub.cpp
+  src/hub.h src/hub.cpp src/linkpreviews.cpp
   src/theme.h src/theme.cpp
   src/listmodel.h src/listmodel.cpp
   src/searchassist.h src/searchassist.cpp
@@ -52,6 +52,7 @@ qt_add_qml_module(message-hub
     qml/ThreadRow.qml
     qml/ThreadView.qml
     qml/MessageRow.qml
+    qml/LinkCard.qml
     qml/Composer.qml
     qml/Avatar.qml
     qml/CaptionButtons.qml

@@ -9,6 +9,7 @@ import { io, type Socket } from 'socket.io-client';
 import { RECHECK_MS, saveAvatar, touchAvatar } from '../avatars.js';
 import { config } from '../config.js';
 import { kvGet, kvSet, q, q1 } from '../db.js';
+import { readLinkPayload, type ProvidedPreview } from '../linkpreview.js';
 import {
   emitLive, ingestMessage, normalizeAddress, setConversationRead, setReaction, upsertConversation, upsertHandle,
   addMember, type MessageInput, type Service,
@@ -457,6 +458,28 @@ export class BlueBubbles {
     const res = await this.api('/message/attachment', { body: form });
     if (res.data?.guid) await this.ingest(res.data, false);
     return res.data;
+  }
+
+  /**
+   * The link preview Messages built for a message (title, site name, picture, icon), read from the message's payload data.
+   * Returns null when the message has none (not a link balloon, or an SMS). Called only when a client shows the message.
+   */
+  async linkPreview(messageGuid: string): Promise<(ProvidedPreview & { source: 'imessage' }) | null> {
+    const res = await this.api(`/message/${encodeURIComponent(messageGuid)}`, { query: { with: 'attachment,payloadData' }, timeoutMs: 20_000 });
+    const m = res.data as (BBMessage & { payloadData?: unknown; balloonBundleId?: string }) | undefined;
+    if (!m?.payloadData) return null;
+    const lp = readLinkPayload(m.payloadData);
+    if (!lp || !lp.title) return null;
+    // The picture and icon travel as hidden attachments; the payload says which one is which by position.
+    const atts = m.attachments ?? [];
+    const fetchAtt = async (i: number | null) => {
+      const a = i == null ? undefined : atts[i];
+      if (!a || (a.totalBytes ?? 0) > 8_000_000) return null;
+      const r = await fetch(this.url(`/attachment/${encodeURIComponent(a.guid)}/download`), { signal: AbortSignal.timeout(30_000) }).catch(() => null);
+      return r?.ok ? Buffer.from(await r.arrayBuffer()) : null;
+    };
+    const [image, icon] = await Promise.all([fetchAtt(lp.imageIndex), fetchAtt(lp.iconIndex)]);
+    return { source: 'imessage', title: lp.title, siteName: lp.siteName, description: lp.summary, image, icon };
   }
 
   async markRead(chatGuid: string) {

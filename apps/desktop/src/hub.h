@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QHash>
+#include <QSet>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
 #include <QObject>
@@ -88,6 +89,9 @@ public:
     Q_INVOKABLE void copyText(const QString &text);
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void openLink(const QString &url);
+    // Link cards (linkpreviews.cpp): the hub's preview for a message's link; empty until linkPreviewReady(messageId).
+    Q_INVOKABLE QVariant linkPreview(qint64 messageId);
+    Q_INVOKABLE QString linkHtml(const QString &text) const;
     Q_INVOKABLE void clearError() { setError({}); }
 
     // ---- for MacShell's Dynamic Island (see App::addIslandClient) ----
@@ -104,6 +108,8 @@ public:
     // A thread's profile photo (version = the hub's photo version, so a changed photo is a new cache entry).
     void fetchAvatar(const QString &tid, const QString &version, std::function<void(QString path, QString error)> done);
     void fetchAttachment(qint64 id, int width, bool retry, std::function<void(QString path, QString error)> done);
+    // A link card's picture or icon (kind "image" or "icon") for a message whose preview has been loaded.
+    void fetchLinkImage(qint64 messageId, const QString &kind, std::function<void(QString path, QString error)> done);
 
     // Called when the window goes away: drop the per-thread state so the process idles small.
     void releaseView();
@@ -126,6 +132,7 @@ signals:
     void incoming(const QVariantMap &message);  // a new message from someone else
     void revealRequested(int row, qint64 id);
     void sendResult(const QString &tid, bool ok, const QString &error);
+    void linkPreviewReady(qint64 messageId);
 
 private:
     Hub();
@@ -205,4 +212,7 @@ private:
     int m_generation = 0;  // bumps when the open thread changes, so late replies are dropped
 
     QHash<QString, QList<std::function<void(QString, QString)>>> m_fetching;
+    QHash<qint64, QVariantMap> m_links;
+    QSet<qint64> m_linksAsked;
+    QString linkImagePath(qint64 messageId, const QString &kind) const;
 };
