@@ -52,6 +52,9 @@ App::App() {
     connect(Updater::instance(), &Updater::changed, this, [this] {
         if (Updater::instance()->ready() && !m_engine) QTimer::singleShot(1500, this, &App::restartWhenIdle);
     });
+    // An update an earlier run downloaded but never installed is ready from the start, so no change is signalled:
+    // install it once the app has settled, if it started without a window (with a window, closing it installs it).
+    if (Updater::instance()->ready()) QTimer::singleShot(5000, this, &App::restartWhenIdle);
 }
 
 QQuickWindow *App::window() const {

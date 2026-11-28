@@ -5,6 +5,10 @@
 #include <QPointer>
 #include <QThread>
 
+#include <chrono>
+#include <cstdlib>
+#include <thread>
+
 #include "platform.h"
 
 #ifdef MESSAGE_HUB_UPDATER
@@ -145,6 +149,12 @@ bool Updater::applyAndExit(const QStringList &restartArgs) {
         setState("error");
         return false;
     }
+    // The updater waits for this process to end before it installs. If shutting down hangs (a network call or a worker
+    // thread that won't finish), end the process anyway, or the update would wait for it indefinitely.
+    std::thread([] {
+        std::this_thread::sleep_for(std::chrono::seconds(3));
+        std::_Exit(0);
+    }).detach();
     QCoreApplication::exit(0);
     return true;
 #else
