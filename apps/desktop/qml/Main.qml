@@ -31,7 +31,7 @@ Window {
     Rectangle {
         id: frame
         anchors.fill: parent
-        radius: 12
+        radius: Platform.windowRadius
         // With glass the sidebar and the conversation pane tint the compositor's glass each in their own strength.
         color: Theme.glass ? "transparent" : Theme.bg
         border.width: 1
@@ -97,6 +97,15 @@ Window {
                 onTriggered: Hub.clearError()
             }
             MouseArea { anchors.fill: parent; onClicked: Hub.clearError() }
+        }
+
+        // With glass the window's edge catches the light, over the rim.
+        GlassEdge {
+            anchors.fill: parent
+            visible: Theme.glass
+            radius: frame.radius
+            rim: Theme.edgeLight
+            sheen: Theme.edgeSheen
         }
 
         Menu { id: popup }

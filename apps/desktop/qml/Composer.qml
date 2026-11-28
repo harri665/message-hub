@@ -114,9 +114,17 @@ Rectangle {
                 anchors.rightMargin: 14
                 height: Math.min(Math.max(34, input.contentHeight + 16), 140)
                 radius: 17
-                color: "transparent"
+                // Over glass the field is solid, so what you type always reads well, and its edge catches the light.
+                color: Theme.glass ? Theme.card : "transparent"
                 border.width: 1
                 border.color: input.activeFocus ? Qt.rgba(Theme.text.r, Theme.text.g, Theme.text.b, 0.25) : Theme.border
+
+                GlassEdge {
+                    anchors.fill: parent
+                    visible: Theme.glass
+                    radius: field.radius
+                    rim: Theme.edgeLight * 0.8
+                }
 
                 Flickable {
                     id: flick

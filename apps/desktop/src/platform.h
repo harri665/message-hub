@@ -17,7 +17,8 @@ class QJSEngine;
 //                         Linux                                   Windows
 //   notifications         freedesktop D-Bus (click opens chat)    tray icon balloons / toasts (click opens chat)
 //   file picker           XDG desktop portal                      native file dialog
-//   window glass          Hyprland + hyprglass window tags        DWM acrylic backdrop (Windows 11)
+//   window glass          Hyprland + hyprglass window tags        DWM acrylic backdrop (Windows 11 22H2+)
+//   rounded corners       drawn by the app (12 px)                DWM's own (8 px, Windows 11)
 //   bring to front        Hyprland focus dispatch                 SetForegroundWindow
 //   idle memory           malloc_trim + restart in background     trim the working set
 //   background presence   MacShell's Dynamic Island               tray icon (Open / Quit)
@@ -28,6 +29,8 @@ class Platform : public QObject {
     QML_SINGLETON
     // The app keeps an icon in the system tray while it runs (Windows), so closing the window never looks like quitting.
     Q_PROPERTY(bool hasTray READ hasTray CONSTANT)
+    // Corner radius of the window, so the QML draws its edge along the same curve as the system's own corners.
+    Q_PROPERTY(int windowRadius READ windowRadius CONSTANT)
 
 public:
     static Platform *instance();
@@ -43,6 +46,11 @@ public:
     // Once the application object exists: the tray icon (Windows), notification signals (Linux).
     void init();
     bool hasTray() const;
+    int windowRadius() const;
+    // The system offers window glass and the user lets apps use it, so the Automatic glass setting means on (Windows 11
+    // with transparency effects on). Linux: false, Automatic follows MacShell there. systemGlassChanged() when it may
+    // have changed.
+    static bool systemGlass();
 
     // A desktop notification for a chat. key identifies it (the thread id): a newer one for the same key replaces
     // it, withdraw() removes it, and clicking it emits activated(key).
@@ -52,6 +60,8 @@ public:
     // The system's file picker; done() gets the chosen files (not called when cancelled), failed() an error message.
     void pickFiles(const QString &title, std::function<void(const QList<QUrl> &)> done, std::function<void(const QString &)> failed);
 
+    // A new window was just created: set up its frame (Windows 11: system rounded corners and shadow, ready for glass).
+    void prepareWindow(QQuickWindow *w);
     // Compositor glass behind the window. again: a repeat shortly after the window first appears, for compositors that
     // only learn about the window late.
     void setGlass(QQuickWindow *w, bool on, bool dark, bool again = false);
@@ -68,6 +78,7 @@ signals:
     void activated(const QString &key);  // a notification was clicked
     void showRequested();                 // the tray icon was clicked
     void quitRequested();                 // Quit in the tray menu
+    void systemGlassChanged();            // systemGlass() may have changed
 
 private:
     Platform();

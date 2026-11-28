@@ -1,6 +1,7 @@
-// Windows: a tray icon (which also carries the notifications), the native file dialog, DWM for window glass.
+// Windows: a tray icon (which also carries the notifications), the native file dialog, DWM for the window frame and glass.
 #include "platform.h"
 
+#include <QAbstractNativeEventFilter>
 #include <QApplication>
 #include <QFileDialog>
 #include <QDir>
@@ -8,6 +9,8 @@
 #include <QIcon>
 #include <QJSEngine>
 #include <QMenu>
+#include <QOperatingSystemVersion>
+#include <QPointer>
 #include <QQuickWindow>
 #include <QSettings>
 #include <QSystemTrayIcon>
@@ -31,10 +34,17 @@ QString launcherPath() {
 }
 }  // namespace
 
+namespace {
+class WindowFrame;
+WindowFrame *installWindowFrame();
+}  // namespace
+
 struct Platform::Private {
     QSystemTrayIcon *tray = nullptr;
     QMenu *menu = nullptr;
     QString lastKey;  // the tray can only show one message at a time; a click on it opens this chat
+    WindowFrame *frame = nullptr;     // the window's frame and glass (Windows 11)
+    QPointer<QQuickWindow> window;    // the window it was set up for
 };
 
 Platform::Platform() : d(new Private) {}
@@ -79,6 +89,7 @@ void Platform::init() {
         if (!d->lastKey.isEmpty()) emit activated(d->lastKey);
     });
     d->tray->show();
+    d->frame = installWindowFrame();  // the window's frame and glass (see below)
 }
 
 void Platform::notify(const QString &key, const QString &title, const QString &body) {
@@ -98,10 +109,100 @@ void Platform::pickFiles(const QString &title, std::function<void(const QList<QU
     });
 }
 
-// Windows 11 draws an acrylic backdrop behind the whole window once the frame is extended over it; the QML then tints
-// it exactly as it tints hyprglass on Linux. Older Windows ignores the backdrop attribute and shows the tint alone.
+// ---------- window frame and glass ----------
+// Qt makes a frameless window with an alpha channel a layered window (WS_EX_LAYERED). DWM draws neither a system
+// backdrop nor rounded corners for those, so on Windows 11 the window becomes an ordinary resizable top-level window
+// whose frame is all client area: no WS_EX_LAYERED, WS_THICKFRAME so DWM rounds its corners, and WM_NCCALCSIZE
+// answered so no frame shows. Qt Quick draws through DirectComposition with an alpha channel, so with the
+// frame extended over the whole window the acrylic backdrop shows wherever the QML leaves the window translucent.
+namespace {
+bool windows11() { return QOperatingSystemVersion::current() >= QOperatingSystemVersion::Windows11; }
+// DWMWA_SYSTEMBACKDROP_TYPE (acrylic, Mica) exists from Windows 11 22H2 (build 22621).
+bool hasBackdrop() { return QOperatingSystemVersion::current() >= QOperatingSystemVersion::Windows11_22H2; }
+// Settings > Personalization > Colors > Transparency effects.
+bool transparencyEffects() {
+    const QSettings s("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", QSettings::NativeFormat);
+    return s.value("EnableTransparency", 1).toInt() != 0;
+}
+
+class WindowFrame : public QAbstractNativeEventFilter {
+public:
+    HWND hwnd = nullptr;
+    bool glass = false;
+
+    bool nativeEventFilter(const QByteArray &, void *message, qintptr *result) override {
+        const MSG *m = static_cast<const MSG *>(message);
+        // Transparency effects or the colour mode changed: Automatic glass may follow.
+        if (m->message == WM_SETTINGCHANGE && m->lParam && !wcscmp(reinterpret_cast<const wchar_t *>(m->lParam), L"ImmersiveColorSet"))
+            emit Platform::instance()->systemGlassChanged();
+        if (!hwnd || m->hwnd != hwnd) return false;
+        if (m->message == WM_NCCALCSIZE && m->wParam) {
+            // All of the window is client area. Maximized, the window reaches past the screen by its frame: keep the
+            // content on the screen's work area.
+            if (IsZoomed(hwnd)) {
+                auto *p = reinterpret_cast<NCCALCSIZE_PARAMS *>(m->lParam);
+                MONITORINFO mi{};
+                mi.cbSize = sizeof mi;
+                if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi)) IntersectRect(&p->rgrc[0], &p->rgrc[0], &mi.rcWork);
+            }
+            *result = 0;
+            return true;
+        }
+        if (m->message == WM_NCACTIVATE && glass) {
+            // DWM replaces the backdrop with a flat colour while the frame looks inactive. Keep the frame looking active
+            // so the glass stays while another window has the focus, as glass does on macOS. (Qt tracks focus through
+            // WM_ACTIVATE, which this leaves alone, and there is no title bar whose look would change.)
+            *result = DefWindowProcW(hwnd, WM_NCACTIVATE, TRUE, -1);
+            return true;
+        }
+        return false;
+    }
+};
+
+void applyFrame(HWND h) {
+    const LONG ex = GetWindowLongW(h, GWL_EXSTYLE), style = GetWindowLongW(h, GWL_STYLE);
+    if (!(ex & WS_EX_LAYERED) && (style & WS_THICKFRAME)) return;
+    SetWindowLongW(h, GWL_EXSTYLE, ex & ~WS_EX_LAYERED);
+    SetWindowLongW(h, GWL_STYLE, style | WS_THICKFRAME);
+    const int corners = 2;  // DWMWCP_ROUND
+    DwmSetWindowAttribute(h, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &corners, sizeof corners);
+    const COLORREF border = 0xFFFFFFFE;  // DWMWA_COLOR_NONE: the QML draws the window's edge
+    DwmSetWindowAttribute(h, 34 /* DWMWA_BORDER_COLOR */, &border, sizeof border);
+    SetWindowPos(h, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+}
+
+// Windows 11 only; Windows 10 keeps Qt's own frameless window.
+WindowFrame *installWindowFrame() {
+    if (!windows11()) return nullptr;
+    auto *f = new WindowFrame;
+    qApp->installNativeEventFilter(f);
+    return f;
+}
+}  // namespace
+
+int Platform::windowRadius() const { return windows11() ? 8 : 12; }  // Windows 11 rounds the window itself, by 8 px
+
+bool Platform::systemGlass() { return hasBackdrop() && transparencyEffects(); }
+
+void Platform::prepareWindow(QQuickWindow *w) {
+    if (!w || !d->frame) return;
+    const HWND h = reinterpret_cast<HWND>(w->winId());
+    if (d->window != w) {
+        d->window = w;
+        d->frame->hwnd = h;
+        d->frame->glass = false;  // setGlass() sets it up for this window
+        // Qt may make the window layered again when it changes it (shown again, maximized); undo that each time.
+        connect(w, &QWindow::visibilityChanged, this, [w] { applyFrame(reinterpret_cast<HWND>(w->winId())); });
+    }
+    applyFrame(h);
+}
+
+// Windows 11 (22H2 and later) draws an acrylic backdrop behind the whole window once the frame is extended over it; the
+// QML then tints it exactly as it tints hyprglass on Linux. Without a backdrop (Windows 11 21H2) glass on just makes the
+// window translucent; Windows 10 keeps Qt's own window and shows the tint alone.
 void Platform::setGlass(QQuickWindow *w, bool on, bool dark, bool) {
     if (!w) return;
+    prepareWindow(w);
     const HWND h = reinterpret_cast<HWND>(w->winId());
     const BOOL darkMode = dark;
     DwmSetWindowAttribute(h, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &darkMode, sizeof darkMode);
@@ -109,6 +210,11 @@ void Platform::setGlass(QQuickWindow *w, bool on, bool dark, bool) {
     DwmExtendFrameIntoClientArea(h, &margins);
     const int backdrop = on ? 3 /* DWMSBT_TRANSIENTWINDOW (acrylic) */ : 1 /* DWMSBT_NONE */;
     DwmSetWindowAttribute(h, 38 /* DWMWA_SYSTEMBACKDROP_TYPE */, &backdrop, sizeof backdrop);
+    if (d->frame && d->frame->glass != on) {
+        d->frame->glass = on;
+        // Bring the frame's active look in line now rather than at the next focus change.
+        SendMessageW(h, WM_NCACTIVATE, on || GetForegroundWindow() == h, -1);
+    }
 }
 
 void Platform::forgetWindow() {}

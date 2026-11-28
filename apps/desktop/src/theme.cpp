@@ -10,6 +10,8 @@
 #include <QJsonObject>
 #include <QStyleHints>
 
+#include "platform.h"
+
 namespace {
 QString home(const QString &rel) { return QDir::homePath() + rel; }
 const QString kDock = "/.config/macdock/settings.json";
@@ -54,6 +56,8 @@ Theme::Theme() {
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, &m_debounce, qOverload<>(&QTimer::start));
     // Without MacShell the app follows the system's dark/light setting, live.
     connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, &m_debounce, qOverload<>(&QTimer::start));
+    // Without MacShell, Automatic glass follows the system (e.g. Windows' transparency effects), also live.
+    connect(Platform::instance(), &Platform::systemGlassChanged, &m_debounce, qOverload<>(&QTimer::start));
     load();
     watch();
 }
@@ -96,13 +100,16 @@ void Theme::load() {
 
     // MacShell's Liquid Glass style (its own popovers, or drawn by the compositor) and its glass tuning.
     const bool shellGlass = pick("barStyle").toString() == "liquid" || pick("compositorGlass").toBool();
+    const bool systemGlass = !haveShell && Platform::systemGlass();
     const float opacity = float(qBound(0.0, pick("glassOpacity").toDouble(0.42), 1.0));
     const float rim = float(qBound(0.0, pick("glassRim").toDouble(0.45), 1.0));
 
     if (dark == m_dark && accent == m_accent && family == m_font && bold == m_boldFont && use24h == m_use24h &&
-        shellGlass == m_shellGlass && opacity == m_glassOpacity && rim == m_glassRim && haveShell == m_hasShell)
+        shellGlass == m_shellGlass && systemGlass == m_systemGlass && opacity == m_glassOpacity && rim == m_glassRim &&
+        haveShell == m_hasShell)
         return;
     m_hasShell = haveShell;
+    m_systemGlass = systemGlass;
     m_dark = dark;
     m_accent = accent;
     m_font = family;

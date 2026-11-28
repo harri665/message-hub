@@ -59,13 +59,14 @@ qt_add_qml_module(message-hub
     qml/Glyph.qml
     qml/RoundedImage.qml
     qml/Menu.qml
+    qml/GlassEdge.qml
   RESOURCES
     ../web/public/icons/icon-192.png
 )
 
 qt_add_shaders(message-hub "shaders"
   PREFIX "/"
-  FILES shaders/roundedimage.frag
+  FILES shaders/roundedimage.frag shaders/glassrim.frag
 )
 
 # Open Runde (SIL OFL, see fonts/OpenRunde-LICENSE.txt), MacShell's UI font, so the app looks the same without MacShell.

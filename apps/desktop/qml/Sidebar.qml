@@ -70,7 +70,7 @@ Rectangle {
         const set = mode => () => { Theme.glassMode = mode; };
         const items = [
             { label: "Window glass", header: true },
-            { label: "Automatic", detail: !Theme.hasShell ? "Off" : Theme.shellGlass ? "MacShell: on" : "MacShell: off", checked: Theme.glassMode === "auto", action: set("auto") },
+            { label: "Automatic", detail: Theme.hasShell ? (Theme.shellGlass ? "MacShell: on" : "MacShell: off") : (Theme.autoGlass ? "On" : "Off"), checked: Theme.glassMode === "auto", action: set("auto") },
             { label: "On", checked: Theme.glassMode === "on", action: set("on") },
             { label: "Off", checked: Theme.glassMode === "off", action: set("off") },
             { label: "Messages " + Updater.version, header: true }

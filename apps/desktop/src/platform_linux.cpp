@@ -122,6 +122,10 @@ void Platform::setAutostart(bool) {}  // started from the compositor's config (s
 
 bool Platform::hasTray() const { return false; }
 
+int Platform::windowRadius() const { return 12; }  // the app rounds its own corners (the window has an alpha channel)
+
+bool Platform::systemGlass() { return false; }  // Automatic glass follows MacShell (see Theme)
+
 void Platform::init() {
     integrateAppImage();
     auto bus = QDBusConnection::sessionBus();
@@ -180,6 +184,8 @@ void Platform::pickFiles(const QString &title, std::function<void(const QList<QU
         if (w->isError() && failed) failed(QStringLiteral("No file picker is available. Drag files into the window instead."));
     });
 }
+
+void Platform::prepareWindow(QQuickWindow *) {}
 
 // While glass is on the app tags its own window for hyprglass, with the light or dark glass to match, and takes the
 // tags off again when glass is turned off. With glass off from the start nothing is sent.
