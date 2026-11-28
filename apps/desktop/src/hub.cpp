@@ -28,8 +28,20 @@
 namespace {
 constexpr int kPage = 60;
 
-QString configDir() { return QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation); }
-QString cacheDir() { return QStandardPaths::writableLocation(QStandardPaths::CacheLocation); }
+// MESSAGE_HUB_PROFILE=<dir> keeps a test instance's session and cache apart from the real one (on every system;
+// Windows has no XDG_CONFIG_HOME / XDG_CACHE_HOME to do it with).
+QString profileDir(const char *sub) {
+    const QString p = qEnvironmentVariable("MESSAGE_HUB_PROFILE");
+    return p.isEmpty() ? QString() : QDir(p).filePath(QString::fromLatin1(sub));
+}
+QString configDir() {
+    const QString p = profileDir("config");
+    return p.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) : p;
+}
+QString cacheDir() {
+    const QString p = profileDir("cache");
+    return p.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::CacheLocation) : p;
+}
 
 QDateTime parseTime(const QVariant &v) {
     QDateTime d = QDateTime::fromString(v.toString(), Qt::ISODateWithMs);
