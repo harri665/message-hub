@@ -25,13 +25,13 @@ Rectangle {
 
     DragHandler { target: null; onActiveChanged: if (active) side.window.startSystemMove() }
 
-    TrafficLights { x: 18; y: 19; window: side.window }
+    TrafficLights { x: 18; y: 19; window: side.window; visible: Platform.windowControls === "mac" }
 
     // Settings: the window glass option (saved in the app's config), the version and updates.
     Item {
         id: gear
-        anchors.right: parent.right
-        anchors.rightMargin: 8
+        // Without traffic lights the top-left is free: the gear takes it, clear of the window buttons on the right.
+        x: Platform.windowControls === "mac" ? side.width - width - 8 : 12
         y: 12
         width: 26
         height: 26
@@ -89,8 +89,7 @@ Rectangle {
 
     // Connection state: a quiet dot, as in MacShell's menus.
     Row {
-        anchors.right: gear.left
-        anchors.rightMargin: 6
+        x: Platform.windowControls === "mac" ? gear.x - 6 - width : gear.x + gear.width + 8
         y: 18
         spacing: 6
         visible: !Hub.online

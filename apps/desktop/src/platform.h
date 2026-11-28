@@ -2,11 +2,14 @@
 
 #include <QList>
 #include <QObject>
+#include <QQuickWindow>
+#include <QRectF>
+#include <QString>
 #include <QUrl>
 #include <functional>
 #include <qqmlintegration.h>
 
-class QQuickWindow;
+
 class QQmlEngine;
 class QJSEngine;
 
@@ -17,6 +20,7 @@ class QJSEngine;
 //                         Linux                                   Windows
 //   notifications         freedesktop D-Bus (click opens chat)    tray icon balloons / toasts (click opens chat)
 //   file picker           XDG desktop portal                      native file dialog
+//   window buttons        traffic lights, top-left                Windows 11 caption buttons, top-right
 //   window glass          Hyprland + hyprglass window tags        DWM acrylic backdrop (Windows 11)
 //   bring to front        Hyprland focus dispatch                 SetForegroundWindow
 //   idle memory           malloc_trim + restart in background     trim the working set
@@ -28,6 +32,13 @@ class Platform : public QObject {
     QML_SINGLETON
     // The app keeps an icon in the system tray while it runs (Windows), so closing the window never looks like quitting.
     Q_PROPERTY(bool hasTray READ hasTray CONSTANT)
+    // Which window buttons the window wears: "mac" (red/yellow/green at the top-left) or "windows" (minimize, maximize and
+    // close at the top-right). The QML follows this; it never asks which system it runs on.
+    Q_PROPERTY(QString windowControls READ windowControls CONSTANT)
+    // Windows 11 Snap Layouts: the maximize button is reported to the system as the window's maximize button, so the system
+    // owns its pointer events. These follow it (hover, press) and click toggles maximize.
+    Q_PROPERTY(bool maximizeHover READ maximizeHover NOTIFY maximizeStateChanged)
+    Q_PROPERTY(bool maximizeDown READ maximizeDown NOTIFY maximizeStateChanged)
 
 public:
     static Platform *instance();
@@ -43,6 +54,11 @@ public:
     // Once the application object exists: the tray icon (Windows), notification signals (Linux).
     void init();
     bool hasTray() const;
+    QString windowControls() const;
+    bool maximizeHover() const;
+    bool maximizeDown() const;
+    // Where the maximize button is, in the window's own coordinates (empty: none). Only Windows uses it.
+    Q_INVOKABLE void setMaximizeButton(QQuickWindow *w, const QRectF &rect);
 
     // A desktop notification for a chat. key identifies it (the thread id): a newer one for the same key replaces
     // it, withdraw() removes it, and clicking it emits activated(key).
@@ -68,6 +84,8 @@ signals:
     void activated(const QString &key);  // a notification was clicked
     void showRequested();                 // the tray icon was clicked
     void quitRequested();                 // Quit in the tray menu
+    void maximizeStateChanged();
+    void maximizeClicked();               // the system saw a click on the maximize button
 
 private:
     Platform();

@@ -34,7 +34,8 @@ runs on. Both apps are built from the same commit and released together under on
 
 | | Linux | Windows |
 |---|---|---|
-| Look (MacShell style, traffic lights, Open Runde font) | yes | yes, identical |
+| Look (MacShell style, Open Runde font) | yes | yes, identical |
+| Window buttons | macOS traffic lights, top-left | Windows 11 minimize / maximize / close, top-right (Snap Layouts on the maximize button); the settings gear moves to the top-left |
 | Dark / light | MacShell's setting, else the desktop's | Windows' setting |
 | Accent colour, 24-hour clock | from MacShell | macOS blue, 12-hour |
 | Notifications, click to open the chat | desktop notifications (D-Bus) | Windows notifications from the tray icon |
@@ -57,7 +58,7 @@ New features go into the shared code; something that can only exist on one syste
   web app) show a crossed-out bell and a grey unread dot, send no notifications, don't pop up in the Dynamic Island,
   and don't add to the unread count.
 - **Follows MacShell's theme while it runs**: dark/light mode, accent colour, the Open Runde font and the 24-hour
-  clock are read from `~/.config/macdock/settings.json` and `~/.config/macbar/settings.json`. The window, traffic lights and
+  clock are read from `~/.config/macdock/settings.json` and `~/.config/macbar/settings.json`. The window, window buttons and
   colours match MacShell's own app windows. Without MacShell it follows the desktop's dark/light setting.
 - **Liquid Glass, optional**: see [Glass](#glass).
 

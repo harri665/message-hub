@@ -18,7 +18,7 @@ Rectangle {
     Component.onCompleted: if (visible) (server.text ? password : server).editor.forceActiveFocus()
 
     DragHandler { target: null; onActiveChanged: if (active) login.window.startSystemMove() }
-    TrafficLights { x: 18; y: 19; window: login.window }
+    TrafficLights { x: 18; y: 19; window: login.window; visible: Platform.windowControls === "mac" }
 
     Column {
         anchors.centerIn: parent

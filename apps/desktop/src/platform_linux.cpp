@@ -121,6 +121,10 @@ QString Platform::socketName() {
 void Platform::setAutostart(bool) {}  // started from the compositor's config (see the README)
 
 bool Platform::hasTray() const { return false; }
+QString Platform::windowControls() const { return "mac"; }
+bool Platform::maximizeHover() const { return false; }
+bool Platform::maximizeDown() const { return false; }
+void Platform::setMaximizeButton(QQuickWindow *, const QRectF &) {}
 
 void Platform::init() {
     integrateAppImage();
