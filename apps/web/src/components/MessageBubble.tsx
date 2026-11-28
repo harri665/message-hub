@@ -2,8 +2,15 @@ import { useState, type CSSProperties } from 'react';
 import type { Attachment, Message } from '../api.ts';
 import { SERVICE_LABEL } from '../api.ts';
 import { clock, fileSize, fullTime, serviceClass } from '../format.ts';
+import { LinkCard, useLinkPreview } from './LinkPreview.tsx';
 
 const URL_RE = /(https?:\/\/[^\s<]+[^\s<.,:;"')\]])/g;
+
+/** A long link is shown shortened ("example.com/some/long/pa..."); the whole address stays in the href and tooltip. */
+function shortLink(url: string) {
+  const t = url.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
+  return t.length > 48 ? `${t.slice(0, 46)}…` : t;
+}
 
 function Linkified({ text }: { text: string }) {
   const parts = text.split(URL_RE);
@@ -11,7 +18,7 @@ function Linkified({ text }: { text: string }) {
     <>
       {parts.map((p, i) =>
         i % 2 === 1 ? (
-          <a key={i} href={p} target="_blank" rel="noreferrer noopener">{p}</a>
+          <a key={i} href={p} target="_blank" rel="noreferrer noopener" title={p}>{shortLink(p)}</a>
         ) : (
           p
         ),
@@ -92,7 +99,10 @@ export function MessageBubble({
     );
   }
   const side = m.from_me ? 'out' : 'in';
-  const hasText = !!m.body && !m.unsent;
+  // A link with a preview shows as a card; the text bubble keeps only the words around it.
+  const card = useLinkPreview(m);
+  const text = card ? card.rest : m.body;
+  const hasText = !!text && !m.unsent;
   return (
     <div
       className={`msg ${side} ${serviceClass(m.service)} ${firstInRun ? 'first' : ''} ${lastInRun ? 'last' : ''} ${highlighted ? 'hit' : ''}`}
@@ -113,10 +123,11 @@ export function MessageBubble({
           {m.unsent && <div className="bubble unsent">Message unsent</div>}
           {hasText && (
             <div className="bubble">
-              <Linkified text={m.body!} />
+              <Linkified text={text!} />
               {m.edited_at && <span className="edited"> (edited)</span>}
             </div>
           )}
+          {card && <LinkCard p={card} />}
           {m.reactions.length > 0 && (
             <div className="reactions glass" aria-label="Reactions">
               {m.reactions.map((r, i) => (
