@@ -2,6 +2,7 @@
 
 #include <QHash>
 #include <QSet>
+#include <QSize>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
 #include <QObject>
@@ -79,6 +80,14 @@ public:
     Q_INVOKABLE void pickFile(int conversationId);
     Q_INVOKABLE void sendFiles(const QList<QUrl> &files, int conversationId);
     Q_INVOKABLE void openAttachment(qint64 id, const QString &filename);
+    // The in-app image viewer (imageviewer.cpp): save a photo with the system's Save As dialog, copy it to the clipboard,
+    // fetch the original file (originalReady() gives its path, for animated GIFs), and remember the real size of photos
+    // the hub had no size for, so their rows don't change height when they scroll back into view.
+    Q_INVOKABLE void saveAttachment(qint64 id, const QString &filename, const QString &mime);
+    Q_INVOKABLE void copyImage(qint64 id);
+    Q_INVOKABLE void fetchOriginal(qint64 id);
+    Q_INVOKABLE QSize knownImageSize(qint64 id) const { return m_imageSizes.value(id); }
+    Q_INVOKABLE void noteImageSize(qint64 id, int w, int h) { if (w > 0 && h > 0) m_imageSizes.insert(id, QSize(w, h)); }
     Q_INVOKABLE void pinMessage(qint64 id, bool pin);
     // Archive or unarchive a whole chat (the hub applies it to every chat of the person, and to WhatsApp).
     Q_INVOKABLE void archiveThread(const QString &tid, bool archive);
@@ -116,6 +125,7 @@ public:
     bool idle() const { return m_writes == 0; }
 
 signals:
+    void originalReady(qint64 id, const QUrl &url);
     void serverChanged();
     void signedInChanged();
     void onlineChanged();
@@ -212,6 +222,7 @@ private:
     int m_generation = 0;  // bumps when the open thread changes, so late replies are dropped
 
     QHash<QString, QList<std::function<void(QString, QString)>>> m_fetching;
+    QHash<qint64, QSize> m_imageSizes;
     QHash<qint64, QVariantMap> m_links;
     QSet<qint64> m_linksAsked;
     QString linkImagePath(qint64 messageId, const QString &kind) const;

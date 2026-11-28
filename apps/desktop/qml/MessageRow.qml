@@ -31,6 +31,7 @@ Item {
     property real flashId: 0
     readonly property bool flash: flashId !== 0 && Number(id) === flashId
     signal pinRequested(var id, bool pin)
+    signal imageRequested(var id)  // a photo was clicked: the window shows it in the image viewer
     property bool group: false
 
     signal replyRequested(var id, string name, string body)
@@ -142,24 +143,42 @@ Item {
                         Item {
                             id: imgItem
                             readonly property var a: att.modelData
-                            readonly property real w0: a.width > 0 ? a.width : 0
-                            readonly property real h0: a.height > 0 ? a.height : 0
-                            readonly property real k: w0 && h0 ? Math.min(1, 240 / w0, 300 / h0) : 1
-                            width: w0 && h0 ? Math.max(60, Math.round(w0 * k)) : 220
-                            height: w0 && h0 ? Math.max(60, Math.round(h0 * k)) : 220
+                            readonly property real dpr: Screen.devicePixelRatio
+                            // The picture's size in pixels, best source first: what was decoded (always upright, so it
+                            // also fixes photos the hub reported sideways), what an earlier look at it found (so a row
+                            // keeps its height when it scrolls back), the size the hub reported. Unknown: 4:3.
+                            readonly property size known: Hub.knownImageSize(a.id)
+                            readonly property size px: photo.natural.width > 0 ? photo.natural
+                                : known.width > 0 ? known
+                                : a.width > 0 && a.height > 0 ? Qt.size(a.width, a.height) : Qt.size(0, 0)
+                            readonly property bool sized: px.width > 0
+                            // Small WebP pictures are stickers: shown small, with no frame.
+                            readonly property bool sticker: a.mime === "image/webp" && sized && Math.max(px.width, px.height) <= 512
+                            readonly property real maxW: sticker ? 170 : Math.min(280, row.maxBubble)
+                            readonly property real maxH: sticker ? 170 : 360
+                            // Real size on screen (never enlarged), then shrunk to fit the box, keeping the aspect.
+                            readonly property real lw: sized ? px.width / dpr : maxW
+                            readonly property real lh: sized ? px.height / dpr : maxW * 0.75
+                            readonly property real k: Math.min(1, maxW / lw, maxH / lh)
+                            width: Math.max(40, Math.round(lw * k))
+                            height: Math.max(40, Math.round(lh * k))
                             property int attempt: 0
+                            Connections {
+                                target: photo
+                                function onStatusChanged() { if (photo.status === Image.Ready) Hub.noteImageSize(imgItem.a.id, photo.natural.width, photo.natural.height); }
+                            }
                             Rectangle {
                                 anchors.fill: parent
                                 radius: 16
                                 color: Theme.ctrl
-                                visible: photo.status !== Image.Ready
+                                visible: photo.status !== Image.Ready && !imgItem.sticker
                                 Column {
                                     anchors.centerIn: parent
                                     spacing: 6
                                     Glyph { anchors.horizontalCenter: parent.horizontalCenter; name: "photo"; color: Theme.text3; width: 22; height: 22 }
                                     Text {
                                         anchors.horizontalCenter: parent.horizontalCenter
-                                        text: photo.status === Image.Error ? "Photo unavailable Â· Retry" : ""
+                                        text: photo.status === Image.Error ? "Photo unavailable · Retry" : ""
                                         color: Theme.text2
                                         font.pixelSize: 11
                                     }
@@ -168,8 +187,21 @@ Item {
                             RoundedImage {
                                 id: photo
                                 anchors.fill: parent
-                                radius: 16
+                                radius: imgItem.sticker ? 0 : 16
+                                // Decoded for the biggest box the photo can have (sharp at any device pixel ratio),
+                                // not for its own size, which depends on the photo.
+                                decodeSize: Qt.size(Math.ceil(imgItem.maxW * imgItem.dpr), Math.ceil(imgItem.maxH * imgItem.dpr))
                                 source: "image://att/" + imgItem.a.id + (imgItem.attempt ? "?retry=" + imgItem.attempt : "")
+                            }
+                            Rectangle {
+                                visible: imgItem.a.mime === "image/gif" && photo.status === Image.Ready
+                                x: 8
+                                y: parent.height - height - 8
+                                width: gifLabel.implicitWidth + 12
+                                height: 18
+                                radius: 9
+                                color: Qt.rgba(0, 0, 0, 0.55)
+                                Text { id: gifLabel; anchors.centerIn: parent; text: "GIF"; color: "white"; font.pixelSize: 10; font.family: Theme.boldFont; font.weight: Font.DemiBold }
                             }
                             MouseArea {
                                 anchors.fill: parent
@@ -178,7 +210,7 @@ Item {
                                 onClicked: mouse => {
                                     if (mouse.button === Qt.RightButton) row.openMenu(imgItem, mouse.x, mouse.y);
                                     else if (photo.status === Image.Error) imgItem.attempt++;
-                                    else Hub.openAttachment(imgItem.a.id, imgItem.a.filename || "");
+                                    else row.imageRequested(imgItem.a.id);
                                 }
                             }
                         }

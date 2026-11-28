@@ -27,7 +27,7 @@ qt_standard_project_setup(REQUIRES 6.5)
 qt_add_executable(message-hub
   src/main.cpp
   src/app.h
-  src/hub.h src/hub.cpp src/linkpreviews.cpp
+  src/hub.h src/hub.cpp src/linkpreviews.cpp src/imageviewer.cpp
   src/theme.h src/theme.cpp
   src/listmodel.h src/listmodel.cpp
   src/searchassist.h src/searchassist.cpp
@@ -61,6 +61,7 @@ qt_add_qml_module(message-hub
     qml/Field.qml
     qml/Glyph.qml
     qml/RoundedImage.qml
+    qml/ImageViewer.qml
     qml/Menu.qml
     qml/GlassEdge.qml
   RESOURCES

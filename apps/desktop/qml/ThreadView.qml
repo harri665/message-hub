@@ -16,6 +16,7 @@ Item {
     readonly property var pins: Hub.current.pins ?? []
     property int pinIndex: 0
     property real flashId: 0
+    signal imageRequested(var id)
     readonly property int pinShown: pins.length ? Math.min(pinIndex, pins.length - 1) : 0
     onPinsChanged: if (pinIndex >= pins.length) pinIndex = 0
     function showPin(i) {
@@ -204,6 +205,7 @@ Item {
             group: view.group
             flashId: view.flashId
             onPinRequested: (id, pin) => Hub.pinMessage(id, pin)
+            onImageRequested: id => view.imageRequested(id)
             onReplyRequested: (id, name, body) => { view.replyTo = { id: id, name: name, body: body }; composer.focusInput(); }
             onMenuRequested: (item, x, y, entries) => {
                 const p = item.mapToItem(view.menu, x, y);

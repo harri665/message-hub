@@ -53,6 +53,10 @@ New features go into the shared code; something that can only exist on one syste
 ## What it does
 
 - Inbox, merged iMessage / SMS / WhatsApp conversations, photos and files, replies, tapbacks, search.
+- **Photo viewer**: clicking a photo opens it large inside the app (the full-resolution file, with the chat's small copy
+  showing meanwhile). Esc or a click on the dim area closes it; **Left**/**Right** (or the arrows) step through the chat's
+  other photos; the wheel or a pinch zooms, dragging pans, double-click toggles fit and 100%; the top bar has *Open in
+  default app*, *Save As* (the system's save dialog) and *Copy image*. Videos and other files open in the system's app.
 - Sending text and files (the **+** button opens the desktop's file picker; you can also drop files into a chat),
   choosing the service when a person has more than one chat, replying (right-click a message).
 - Live updates over the hub's WebSocket and desktop notifications for new messages. Clicking one opens the chat.
@@ -141,7 +145,9 @@ The island side lives in MacShell's `DynamicIsland.qml` (marked `[msgisland]`).
 - The inbox and the latest page of each chat you open are cached on disk, so they appear at once. The hub's own reply
   replaces them when it arrives.
 - Photos are downloaded once into `~/.cache/message-hub` and decoded on a worker thread at the size they are shown,
-  never at full resolution.
+  never at full resolution. In a chat they are drawn at their real shape (never stretched or squashed; the real shape is
+  taken from the decoded picture when the hub sent no size), at most 280 x 360 points, sharp at any display scaling.
+  Small WebP pictures are shown as stickers.
 - Closing the window doesn't quit. The app restarts itself in background mode (about 12 MB of its own memory) so live
   updates and notifications keep working, and reopening is just as quick. **Ctrl+Q** (or *Quit Messages* in the
   launcher's menu) quits for real.
@@ -209,6 +215,7 @@ to judge the glass take a real screenshot.
 | `src/hub.*` | Hub API client: sign-in, inbox, open chat, sending, search, live socket, attachments, notifications and file picker (through `Platform`) |
 | `src/theme.*` | Reads and watches the MacShell settings; the glass option (and what Automatic means) and the glass palette |
 | `src/listmodel.*` | List model that applies minimal changes, so lists keep their scroll position and recycle rows |
+| `src/imageviewer.cpp` | The photo viewer's hub side: Save As, Copy image, the original file of a GIF |
 | `src/main.cpp` | Single instance, window lifecycle (restart into background mode), attachment image provider |
 | `src/platform.h`, `src/platform_linux.cpp`, `src/platform_windows.cpp` | Everything that differs between Linux and Windows (see [Linux and Windows](#linux-and-windows)) |
 | `src/updater.*` | Automatic updates (Velopack) |

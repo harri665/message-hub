@@ -164,29 +164,46 @@ void Platform::withdraw(const QString &key) {
     QDBusConnection::sessionBus().asyncCall(msg);
 }
 
-// The desktop's file picker through the XDG portal (no Qt Widgets needed, so nothing extra is loaded).
-void Platform::pickFiles(const QString &title, std::function<void(const QList<QUrl> &)> done,
-                         std::function<void(const QString &)> failed) {
-    auto bus = QDBusConnection::sessionBus();
+// The desktop's file dialogs through the XDG portal (no Qt Widgets needed, so nothing extra is loaded).
+namespace {
+void portalChooser(const QString &method, const QString &title, QVariantMap options, std::function<void(const QList<QUrl> &)> done,
+                   std::function<void(const QString &)> failed, Bus *bus) {
+    auto conn = QDBusConnection::sessionBus();
     const QString token = "mh" + QString::number(QRandomGenerator::global()->generate());
-    QString sender = bus.baseService().mid(1);
+    QString sender = conn.baseService().mid(1);
     sender.replace('.', '_');
     const QString handlePath = "/org/freedesktop/portal/desktop/request/" + sender + '/' + token;
-    if (!d->bus.pickHandle.isEmpty())
-        bus.disconnect("org.freedesktop.portal.Desktop", d->bus.pickHandle, "org.freedesktop.portal.Request", "Response",
-                       &d->bus, SLOT(onPortalResponse(uint, QVariantMap)));
-    d->bus.pickHandle = handlePath;
-    d->bus.picked = std::move(done);
-    bus.connect("org.freedesktop.portal.Desktop", handlePath, "org.freedesktop.portal.Request", "Response", &d->bus,
-                SLOT(onPortalResponse(uint, QVariantMap)));
+    if (!bus->pickHandle.isEmpty())
+        conn.disconnect("org.freedesktop.portal.Desktop", bus->pickHandle, "org.freedesktop.portal.Request", "Response",
+                        bus, SLOT(onPortalResponse(uint, QVariantMap)));
+    bus->pickHandle = handlePath;
+    bus->picked = std::move(done);
+    conn.connect("org.freedesktop.portal.Desktop", handlePath, "org.freedesktop.portal.Request", "Response", bus,
+                 SLOT(onPortalResponse(uint, QVariantMap)));
     auto msg = QDBusMessage::createMethodCall("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
-                                              "org.freedesktop.portal.FileChooser", "OpenFile");
-    msg << QString() << title << QVariantMap{{"handle_token", token}, {"multiple", true}, {"modal", true}};
-    auto *w = new QDBusPendingCallWatcher(bus.asyncCall(msg), &d->bus);
-    QObject::connect(w, &QDBusPendingCallWatcher::finished, &d->bus, [w, failed] {
+                                              "org.freedesktop.portal.FileChooser", method);
+    options.insert("handle_token", token);
+    options.insert("modal", true);
+    msg << QString() << title << options;
+    auto *w = new QDBusPendingCallWatcher(conn.asyncCall(msg), bus);
+    QObject::connect(w, &QDBusPendingCallWatcher::finished, bus, [w, failed] {
         w->deleteLater();
-        if (w->isError() && failed) failed(QStringLiteral("No file picker is available. Drag files into the window instead."));
+        if (w->isError() && failed) failed(QStringLiteral("No file picker is available."));
     });
+}
+}  // namespace
+
+void Platform::pickFiles(const QString &title, std::function<void(const QList<QUrl> &)> done,
+                         std::function<void(const QString &)> failed) {
+    portalChooser("OpenFile", title, {{"multiple", true}}, std::move(done),
+                  [failed](const QString &) { if (failed) failed(QStringLiteral("No file picker is available. Drag files into the window instead.")); },
+                  &d->bus);
+}
+
+void Platform::saveFile(const QString &title, const QString &suggestedName, std::function<void(const QUrl &)> done,
+                        std::function<void(const QString &)> failed) {
+    portalChooser("SaveFile", title, {{"current_name", suggestedName}},
+                  [done](const QList<QUrl> &urls) { if (!urls.isEmpty() && done) done(urls.first()); }, std::move(failed), &d->bus);
 }
 
 void Platform::prepareWindow(QQuickWindow *) {}
