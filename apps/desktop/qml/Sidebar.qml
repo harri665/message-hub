@@ -76,6 +76,8 @@ Rectangle {
             { label: "Messages " + Updater.version, header: true }
         ];
         if (Updater.enabled) items.push(side.updateItem());
+        // Closing the window keeps the app running for notifications; this ends it for real (Ctrl+Q does the same).
+        items.push({ label: "Force Quit", detail: "Ctrl+Q", action: () => App.quit() });
         side.menu.open(p.x, p.y, items);
     }
     function updateItem() {

@@ -17,6 +17,10 @@
 #include <QStyleHints>
 #include <QTimer>
 
+#include <chrono>
+#include <cstdlib>
+#include <thread>
+
 #include "app.h"
 #include "hub.h"
 #include "platform.h"
@@ -159,7 +163,15 @@ void App::restartWhenIdle() {
 }
 
 // exit(), not quit(): quit() first asks the window to close, and closing only hides it.
-void App::quit() { QCoreApplication::exit(0); }
+// Quitting is forced: if shutting down hangs (a stuck network call, a worker thread that won't finish), the process ends
+// anyway after two seconds. Settings are saved as they change, so nothing is lost.
+void App::quit() {
+    std::thread([] {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        std::_Exit(0);
+    }).detach();
+    QCoreApplication::exit(0);
+}
 
 // Development aid, only with MESSAGE_HUB_DEV set: `message-hub --dev "grab /tmp/x.png"` drives the running instance.
 void App::dev(const QString &cmd) {
