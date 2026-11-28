@@ -15,6 +15,13 @@ Rectangle {
     }
     signal sent()
     signal cancelReply()
+    // Ask for a time to send the text later (the view shows the picker); the box clears once it is scheduled.
+    signal scheduleRequested(string text, int conversationId, int replyToId)
+    function scheduled() { input.clear(); c.sent(); }
+    function scheduleLater() {
+        const text = input.text.trim();
+        if (text) c.scheduleRequested(text, c.conversationId, c.replyTo ? c.replyTo.id : 0);
+    }
 
     function focusInput() { input.forceActiveFocus(); }
     function send() {
@@ -176,7 +183,7 @@ Rectangle {
                     id: flick
                     anchors.fill: parent
                     anchors.leftMargin: 14
-                    anchors.rightMargin: 38
+                    anchors.rightMargin: input.text.trim().length > 0 ? 66 : 38
                     anchors.topMargin: 8
                     anchors.bottomMargin: 8
                     contentWidth: width
@@ -229,6 +236,40 @@ Rectangle {
                     }
                 }
 
+                // Send later: opens the schedule picker for what is typed.
+                Rectangle {
+                    id: later
+                    anchors.right: parent.right
+                    anchors.rightMargin: 34
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 4
+                    width: 26
+                    height: 26
+                    radius: 13
+                    visible: input.text.trim().length > 0
+                    color: laterMa.containsMouse ? Theme.ctrlSel : Theme.ctrl
+                    Canvas {
+                        anchors.centerIn: parent
+                        width: 14
+                        height: 14
+                        property color tint: Theme.text2
+                        onTintChanged: requestPaint()
+                        onPaint: {
+                            const g = getContext("2d");
+                            g.reset();
+                            g.strokeStyle = tint;
+                            g.lineWidth = 1.5;
+                            g.lineCap = "round";
+                            g.lineJoin = "round";
+                            g.beginPath();
+                            g.arc(7, 7, 5.8, 0, Math.PI * 2);
+                            g.moveTo(7, 3.6); g.lineTo(7, 7); g.lineTo(9.4, 8.4);
+                            g.stroke();
+                        }
+                    }
+                    MouseArea { id: laterMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: c.scheduleLater() }
+                }
+
                 Rectangle {
                     anchors.right: parent.right
                     anchors.rightMargin: 4
@@ -240,7 +281,12 @@ Rectangle {
                     visible: input.text.trim().length > 0
                     color: c.conv && c.conv.network === "whatsapp" ? Theme.whatsapp : (c.conv && c.conv.lastService !== "imessage" ? Theme.sms : Theme.accent)
                     Glyph { anchors.centerIn: parent; name: "up"; width: 14; height: 14; color: "white"; stroke: 2 }
-                    MouseArea { anchors.fill: parent; onClicked: c.send() }
+                    // Right-click Send to schedule instead.
+                    MouseArea {
+                        anchors.fill: parent
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        onClicked: mouse => { if (mouse.button === Qt.RightButton) c.scheduleLater(); else c.send(); }
+                    }
                 }
             }
         }

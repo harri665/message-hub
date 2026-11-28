@@ -20,6 +20,7 @@
 #include <QSet>
 #include <QStandardPaths>
 #include <QStyleHints>
+#include <QTimeZone>
 #include <QUrlQuery>
 
 #include "platform.h"
@@ -162,7 +163,8 @@ Hub::Hub()
       m_messageModel({"key", "id", "fromMe", "kind", "html", "body", "jumbo", "time", "service", "senderName", "showName",
                       "separator", "tail", "statusText", "failed", "pending", "attachments", "reactions", "replyName",
                       "replyBody", "unsent", "edited", "pinned"},
-                     "key") {
+                     "key"),
+      m_scheduledModel({"key", "id", "text", "status", "error", "service", "sendMs", "retrying"}, "key") {
     m_nam.setTransferTimeout(60000);
     m_nam.setAutoDeleteReplies(false);
 
@@ -183,6 +185,7 @@ Hub::Hub()
     connect(&m_clock, &QTimer::timeout, this, [this] {
         for (auto &t : m_allThreads) t = decorateThread(t);
         rebuildThreadModel();
+        if (!m_tid.isEmpty()) refreshScheduled();  // also keeps the "tomorrow" in their labels right
     });
     m_clock.start();
     connect(Theme::instance(), &Theme::changed, this, [this] {
@@ -610,6 +613,7 @@ void Hub::openThread(const QString &tid) {
         saveThreadCache(m_tid);
     });
     refreshCurrent();
+    refreshScheduled();
     markRead(tid);
 }
 
@@ -622,6 +626,7 @@ void Hub::closeThread() {
     m_hasOlder = false;
     m_loadingOlder = false;
     m_messageModel.setRows({});
+    m_scheduledModel.setRows({});
     emit currentChanged();
     emit olderChanged();
 }
@@ -814,6 +819,100 @@ void Hub::refreshDetail() {
         emit currentChanged();
         saveThreadCache(m_tid);
     });
+}
+
+// ---------- scheduled messages ----------
+
+void Hub::refreshScheduled() {
+    if (m_tid.isEmpty() || !signedIn()) return;
+    const int gen = m_generation;
+    handle(call("GET", "/api/threads/" + m_tid + "/scheduled"), [this, gen](const QJsonDocument &doc) {
+        if (gen != m_generation) return;
+        QList<QVariantMap> rows;
+        for (const auto &v : doc.array()) {
+            QVariantMap r = v.toObject().toVariantMap();
+            const QString status = r.value("status").toString();
+            r["key"] = "s" + r.value("id").toString();
+            r["sendMs"] = QDateTime::fromString(r.value("sendAt").toString(), Qt::ISODateWithMs).toMSecsSinceEpoch();
+            r["retrying"] = status == "scheduled" && !r.value("error").toString().isEmpty();
+            rows << r;
+        }
+        m_scheduledModel.setRows(rows);
+    });
+    if (m_hubZone.isEmpty()) {
+        handle(call("GET", "/api/status"), [this](const QJsonDocument &doc) {
+            const QString z = doc.object().value("timeZone").toString();
+            if (z != m_hubZone) { m_hubZone = z; emit hubTimeZoneChanged(); }
+        });
+    }
+}
+
+void Hub::schedule(const QString &textIn, int conversationId, int replyToId, qint64 whenMs) {
+    const QString text = textIn.trimmed();
+    if (text.isEmpty() || m_tid.isEmpty()) return;
+    QJsonObject body{{"text", text}, {"sendAt", QDateTime::fromMSecsSinceEpoch(whenMs, QTimeZone::UTC).toString(Qt::ISODate)}};
+    if (conversationId) body.insert("conversationId", conversationId);
+    if (replyToId) body.insert("replyTo", replyToId);
+    handle(call("POST", "/api/threads/" + m_tid + "/scheduled", QJsonDocument(body).toJson()),
+           [this](const QJsonDocument &) { refreshScheduled(); emit scheduleResult(true, {}); },
+           [this](int, const QString &e) { emit scheduleResult(false, e); });
+}
+
+void Hub::editScheduled(qint64 id, const QString &text, qint64 whenMs) {
+    QJsonObject body;
+    if (!text.trimmed().isEmpty()) body.insert("text", text.trimmed());
+    if (whenMs > 0) body.insert("sendAt", QDateTime::fromMSecsSinceEpoch(whenMs, QTimeZone::UTC).toString(Qt::ISODate));
+    handle(call("PATCH", QStringLiteral("/api/scheduled/%1").arg(id), QJsonDocument(body).toJson()),
+           [this](const QJsonDocument &) { refreshScheduled(); emit scheduleResult(true, {}); },
+           [this](int, const QString &e) { emit scheduleResult(false, e); });
+}
+
+void Hub::sendScheduledNow(qint64 id) {
+    handle(call("POST", QStringLiteral("/api/scheduled/%1/send-now").arg(id)),
+           [this](const QJsonDocument &) { refreshScheduled(); m_messagesTimer.start(); },
+           [this](int, const QString &e) { setError(e); refreshScheduled(); });
+}
+
+void Hub::cancelScheduled(qint64 id) {
+    handle(call("DELETE", QStringLiteral("/api/scheduled/%1").arg(id)),
+           [this](const QJsonDocument &) { refreshScheduled(); },
+           [this](int, const QString &e) { setError(e); refreshScheduled(); });
+}
+
+QString Hub::sendsLabel(qint64 whenMs) const {
+    const QDateTime d = QDateTime::fromMSecsSinceEpoch(whenMs).toLocalTime();
+    const qint64 days = QDate::currentDate().daysTo(d.date());
+    const QString t = clockText(d);
+    if (days <= 0) return QStringLiteral("today at ") + t;
+    if (days == 1) return QStringLiteral("tomorrow at ") + t;
+    if (days < 7) return QLocale().dayName(d.date().dayOfWeek(), QLocale::LongFormat) + QStringLiteral(" at ") + t;
+    const QString date = d.date().year() == QDate::currentDate().year() ? QLocale().toString(d.date(), QStringLiteral("MMM d"))
+                                                                         : QLocale().toString(d.date(), QStringLiteral("MMM d, yyyy"));
+    return date + QStringLiteral(" at ") + t;
+}
+
+QVariantList Hub::quickTimes() const {
+    const QDateTime now = QDateTime::currentDateTime();
+    const QDate today = now.date();
+    QVariantList out;
+    auto add = [&](const QString &label, const QDate &day, int hour) {
+        const QDateTime at(day, QTime(hour, 0));
+        out << QVariantMap{{"label", label}, {"time", clockText(at)}, {"ms", at.toMSecsSinceEpoch()}};
+    };
+    if (now.secsTo(QDateTime(today, QTime(18, 0))) > 15 * 60) add(QStringLiteral("Later today"), today, 18);
+    add(QStringLiteral("Tomorrow"), today.addDays(1), 9);
+    const int untilMonday = (8 - today.dayOfWeek()) % 7 ? (8 - today.dayOfWeek()) % 7 : 7;  // Monday is 1, Sunday 7
+    if (untilMonday > 1) add(QStringLiteral("Monday"), today.addDays(untilMonday), 9);
+    return out;
+}
+
+QString Hub::localTimeZone() const { return QString::fromUtf8(QTimeZone::systemTimeZoneId()); }
+
+QString Hub::inHubZone(qint64 whenMs) const {
+    const QTimeZone z(m_hubZone.toUtf8());
+    if (m_hubZone.isEmpty() || !z.isValid()) return {};
+    const QDateTime d = QDateTime::fromMSecsSinceEpoch(whenMs, z);
+    return QLocale().toString(d.date(), QStringLiteral("ddd, MMM d")) + QStringLiteral(" at ") + clockText(d);
 }
 
 void Hub::pinMessage(qint64 id, bool pin) {
@@ -1203,6 +1302,8 @@ void Hub::onLive(const QString &text) {
         scheduleThreads(3000);
     } else if (type == "conversation-updated") {
         scheduleThreads(1500);
+    } else if (type == "scheduled") {
+        if (ev.value("tid").toString() == m_tid) { refreshScheduled(); m_messagesTimer.start(); }
     } else if (type == "refresh" || type == "send-request") {  // send-request: a message approved in the web app went out
         scheduleThreads(1500);
         if (!m_tid.isEmpty()) m_messagesTimer.start();

@@ -202,6 +202,9 @@ void App::dev(const QString &cmd) {
                      l->property("originY").toDouble(), l->property("contentHeight").toDouble(), l->property("height").toDouble(),
                      l->property("count").toInt(), l->property("atYEnd").toBool());
     }
+    else if (verb == "schedule-ui" && w) {  // open the schedule picker for this text, as the clock button does
+        if (auto *v = w->findChild<QObject *>("threadView")) QMetaObject::invokeMethod(v, "devSchedule", Q_ARG(QVariant, arg));
+    }
     else if (verb == "settings" && w) {
         if (auto *s = w->findChild<QObject *>("sidebar")) QMetaObject::invokeMethod(s, "openSettings");
     }

@@ -13,6 +13,7 @@ import { migrate } from './db.js';
 import { registerApiRoutes } from './routes/api.js';
 import { registerLinkRoutes } from './routes/links.js';
 import { redactUrl, registerMcp } from './mcp.js';
+import { startScheduler } from './scheduled.js';
 import { BlueBubbles } from './sources/bluebubbles.js';
 import { WhatsApp } from './sources/whatsapp.js';
 
@@ -118,6 +119,7 @@ await app.listen({ port: config.port, host: '0.0.0.0' });
 
 bb.start().catch((e) => app.log.error(e, 'BlueBubbles start failed'));
 wa.start().catch((e) => app.log.error(e, 'WhatsApp start failed'));
+startScheduler(bb, wa, app.log);
 
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, () => {

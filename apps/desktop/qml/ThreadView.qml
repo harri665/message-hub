@@ -4,6 +4,7 @@ import MessageHub
 
 Item {
     id: view
+    objectName: "threadView"
     required property Window window
     required property Menu menu
     property var replyTo: null  // { id, name, body }
@@ -34,6 +35,7 @@ Item {
     Timer { id: flashTimer; interval: 2000; onTriggered: view.flashId = 0 }
 
     function focusComposer() { composer.focusInput(); }
+    function devSchedule(text) { composer.scheduleRequested(text, composer.conversationId, 0); }  // for `--dev schedule-ui`
 
     // Start each conversation at its newest message (also when the window opens on one that is already loaded).
     property string shownTid
@@ -43,6 +45,7 @@ Item {
         pinIndex = 0;
         replyTo = null;
         list.positionViewAtBeginning();
+        list.follow = true;
     }
     Connections {
         target: Hub
@@ -88,6 +91,7 @@ Item {
                         const n = names[c.lastService] ?? c.lastService;
                         if (seen.indexOf(n) < 0) seen.push(n);
                     }
+                    if (Hub.scheduled.count > 0) seen.push(Hub.scheduled.count + " scheduled");
                     return seen.join(" · ");
                 }
                 visible: text.length > 0
@@ -178,7 +182,29 @@ Item {
         reuseItems: true
         cacheBuffer: 800
         boundsBehavior: Flickable.StopAtBounds
-        header: Item { width: 1; height: 10 }
+        // The bottom of the list (the header of a bottom-to-top list): messages waiting to be sent, then a little space.
+        header: Column {
+            width: list.width
+            // Scheduled messages appearing or going away at the bottom must not leave the view scrolled up.
+            onHeightChanged: if (list.follow) Qt.callLater(list.positionViewAtBeginning)
+            Repeater {
+                model: Hub.scheduled
+                delegate: ScheduledRow {
+                    width: list.width
+                    onEditRequested: item => {
+                        picker.editId = item.id;
+                        picker.title = "Edit Scheduled Message";
+                        picker.okLabel = "Save";
+                        picker.open(item.text, item.sendMs, true);
+                    }
+                    onMenuRequested: (item, x, y, entries) => {
+                        const p = item.mapToItem(view.menu, x, y);
+                        view.menu.open(p.x, p.y, entries);
+                    }
+                }
+            }
+            Item { width: 1; height: 10 }
+        }
         footer: Item {
             width: list.width
             height: 36
@@ -196,6 +222,9 @@ Item {
             const top = indexAt(width / 2, contentY + 2);
             if (top >= count - 12) Hub.loadOlder();
         }
+        // True while the view is at the newest messages (updated when the user stops scrolling).
+        property bool follow: true
+        onMovementEnded: follow = atYBeginning
         onContentYChanged: maybeLoadOlder()
         onCountChanged: Qt.callLater(maybeLoadOlder)
 
@@ -240,5 +269,27 @@ Item {
         replyTo: view.replyTo
         onCancelReply: view.replyTo = null
         onSent: view.replyTo = null
+        onScheduleRequested: (text, convId, replyId) => {
+            picker.editId = 0;
+            picker.convId = convId;
+            picker.replyId = replyId;
+            picker.title = "Schedule Message";
+            picker.okLabel = "Schedule";
+            picker.open(text, 0, false);
+        }
+    }
+
+    SchedulePicker {
+        id: picker
+        property real editId: 0
+        property int convId: 0
+        property int replyId: 0
+        onAccepted: (text, ms) => {
+            if (editId) Hub.editScheduled(editId, text, ms);
+            else Hub.schedule(text, convId, replyId, ms);
+        }
+        // A new message was scheduled: the composer's box clears and a reply ends. (Edits leave the box alone.)
+        onSaved: if (!editId) composer.scheduled()
+        onVisibleChanged: if (!visible) view.focusComposer()
     }
 }

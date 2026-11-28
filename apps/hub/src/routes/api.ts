@@ -11,6 +11,9 @@ import type { WhatsApp } from '../sources/whatsapp.js';
 import { bus, emitLive, type LiveEvent } from '../store.js';
 import { cached } from '../cache.js';
 import { AVATAR_SIZES, resizedAvatar, THREAD_AVATAR_SQL, threadAvatar } from '../avatars.js';
+import {
+  cancelScheduled, createScheduled, editScheduled, listScheduled, ScheduleError, sendScheduledNow, toJson as scheduledJson,
+} from '../scheduled.js';
 import { approveSendRequest, listSendRequests, rejectSendRequest, sendText } from '../outbox.js';
 import {
   checkAddress, convertVoice, findContacts, forgetSocket, react, REACTIONS, reportActivity, setTyping, startConversation, updatePresence,
@@ -152,7 +155,7 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
   app.register(async (r) => {
     r.addHook('preHandler', requireSession);
 
-    r.get('/api/status', async () => ({ bluebubbles: { ...bb.status, url: bb.currentUrl }, whatsapp: await wa.status() }));
+    r.get('/api/status', async () => ({ bluebubbles: { ...bb.status, url: bb.currentUrl }, whatsapp: await wa.status(), timeZone: config.timeZone }));
 
     r.put<{ Body: { url?: string; password?: string } }>('/api/settings/bluebubbles', async (req, reply) => {
       if (!req.body?.url || !req.body?.password) return reply.code(400).send({ error: 'Address and password are required' });
@@ -325,6 +328,30 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
         return { ok: true };
       },
     );
+
+    // ---------- scheduled messages: sent by the hub (scheduled.ts) at the chosen time ----------
+    // Not available to MCP: Claude's sends always go through the approval queue.
+    const scheduledId = (s: string) => {
+      const id = Number(s);
+      if (!Number.isSafeInteger(id)) throw new ScheduleError(404, 'Scheduled message not found.');
+      return id;
+    };
+    r.post<{ Params: { tid: string }; Body: { text?: string; sendAt?: string; conversationId?: number; replyTo?: number } }>(
+      '/api/threads/:tid/scheduled',
+      async (req, reply) => {
+        const b = req.body ?? {};
+        const row = await createScheduled({ tid: req.params.tid, text: b.text, sendAt: b.sendAt, conversationId: b.conversationId, replyTo: b.replyTo });
+        return reply.code(201).send(scheduledJson(row));
+      },
+    );
+    r.get<{ Params: { tid: string } }>('/api/threads/:tid/scheduled', async (req) => (await listScheduled(req.params.tid)).map(scheduledJson));
+    r.get('/api/scheduled', async () => (await listScheduled()).map(scheduledJson));
+    r.patch<{ Params: { id: string }; Body: { text?: string; sendAt?: string } }>('/api/scheduled/:id', async (req) =>
+      scheduledJson(await editScheduled(scheduledId(req.params.id), { text: req.body?.text, sendAt: req.body?.sendAt })));
+    r.delete<{ Params: { id: string } }>('/api/scheduled/:id', async (req) => scheduledJson(await cancelScheduled(scheduledId(req.params.id))));
+    // Also the retry for a failed one.
+    r.post<{ Params: { id: string } }>('/api/scheduled/:id/send-now', async (req) =>
+      scheduledJson(await sendScheduledNow(bb, wa, scheduledId(req.params.id))));
 
     // ---------- reactions, typing ----------
     r.get('/api/reactions', async () => REACTIONS);

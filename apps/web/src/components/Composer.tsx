@@ -3,10 +3,12 @@ import {
   type ChangeEvent, type ClipboardEvent, type FormEvent, type KeyboardEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { api, SERVICE_LABEL, type Message, type ThreadDetail } from '../api.ts';
 import { caretOffset, findComplete, findTrigger, searchEmoji } from '../emoji/emoji.ts';
 import { fileSize, serviceClass } from '../format.ts';
 import { getDraft, setDraft } from '../stores.ts';
+import { ScheduleDialog } from './ScheduleDialog.tsx';
 import type { Pending } from './ThreadView.tsx';
 
 interface Props {
@@ -27,6 +29,8 @@ export const Composer = forwardRef<HTMLFormElement, Props>(function Composer({ t
   const [staged, setStaged] = useState<Staged[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [scheduling, setScheduling] = useState(false);
+  const qc = useQueryClient();
   // Default to the conversation with the most recent activity; a reply goes back where the original came from.
   const [convId, setConvId] = useState<number>(thread.conversations[0]?.id);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -197,6 +201,24 @@ export const Composer = forwardRef<HTMLFormElement, Props>(function Composer({ t
     setDraft(tid, '');
     setNotice(null);
     onClearReply();
+    areaRef.current?.focus();
+  };
+
+  // "Schedule message": the hub sends the text later. Files can't be scheduled, only text.
+  const canSchedule = !!text.trim() && !staged.length;
+  const openSchedule = () => {
+    if (!canSchedule) return;
+    setNotice(null);
+    setScheduling(true);
+  };
+  const schedule = async (body: string, at: Date) => {
+    await api.schedule(tid, { text: body, sendAt: at.toISOString(), conversationId: conv.id, replyTo: replyTo?.id });
+    stopTyping();
+    setText('');
+    setDraft(tid, '');
+    onClearReply();
+    setScheduling(false);
+    qc.invalidateQueries({ queryKey: ['scheduled'] });
     areaRef.current?.focus();
   };
 
@@ -376,9 +398,15 @@ export const Composer = forwardRef<HTMLFormElement, Props>(function Composer({ t
           {!text.trim() && !staged.length ? (
             <button type="button" className="pill-btn" onClick={startRecording} title="Record a voice message">Record</button>
           ) : (
-            <button className="pill-btn btn-send">Send</button>
+            <>
+              <button type="button" className="pill-btn schedule-btn" onClick={openSchedule} disabled={!canSchedule} title="Send later" aria-label="Schedule message">Schedule</button>
+              <button className="pill-btn btn-send" onContextMenu={(e) => { if (canSchedule) { e.preventDefault(); openSchedule(); } }} title="Right-click to schedule">Send</button>
+            </>
           )}
         </div>
+      )}
+      {scheduling && (
+        <ScheduleDialog title="Schedule message" submitLabel="Schedule" text={text.trim()} onSubmit={schedule} onClose={() => { setScheduling(false); areaRef.current?.focus(); }} />
       )}
       {popupOpen && pos && createPortal(
         <ul className="emoji-popup glass" role="listbox" aria-label="Emoji" style={{ left: pos.left, bottom: pos.bottom }}>

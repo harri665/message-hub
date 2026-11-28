@@ -36,6 +36,31 @@ In the composer (web and desktop), typing `:` and two letters (`:smi`) opens a l
 
 Right-click (desktop) or use **Pin** on a message (web) to pin it. Pins are private to the hub: nothing is sent to the phone, iMessage or WhatsApp, and other people never see them (iOS 26 message pins never reach the Mac VM, and pinning in WhatsApp would post a notice to the chat, so the hub keeps its own). A pin is a `pinned_at` timestamp on the message (migration 006). `POST /api/messages/:id/pin` and `/unpin` set it (signed-in sessions only) and send a live `message-updated` event, so other open clients update. `GET /api/threads/:tid` lists the thread's `pins`, newest pin first (`id`, `text` preview, `sender`, `sentAt`, `fromMe`, `hasAttachment`). Unsent messages drop out of the pins. A thread with pins shows a Pinned bar under the header: click it to step through the pins (older pages are loaded if needed, and the message is highlighted), or Unpin from it. Claude's `read_conversation` marks pinned messages with "(pinned)" and cannot change pins.
 
+## Scheduled messages
+
+Write a message, then choose **Schedule** (web: the button beside Send, or right-click Send; desktop: the clock button in the message box, or right-click the send arrow) to send it later, for example "tomorrow at 9:00". The picker has quick times (Later today 18:00, Tomorrow 9:00, Monday 9:00) and a date and time. It works for iMessage, SMS and WhatsApp. Only text can be scheduled (not files or voice messages), and a scheduled message can be a reply. Scheduled messages show at the bottom of the chat as dimmed bubbles with a clock and "Sends tomorrow at 9:00 AM", with a menu to edit the text or time, send now or cancel; a "n scheduled" count shows in the chat header. A failed one stays there with its error and a Retry button.
+
+The hub sends them (`apps/hub/src/scheduled.ts`), so they go out when every app, the phone and your computer are off. It sends through the same path as the apps' Send button (`sendText` in `outbox.ts`), so the Mac or the WhatsApp link has to be up at that time. Guarantees:
+
+- **At most once.** Every pass claims due rows with one `UPDATE ... FOR UPDATE SKIP LOCKED` that flips them to `sending`, so two passes (or two hubs) never send the same message. A row stuck in `sending` for over 5 minutes (the hub died mid-send) is marked failed instead of retried, because nobody can know whether it went out.
+- **Survives restarts.** Messages live in Postgres (migration 010, table `scheduled_message`). The scheduler runs every 15 seconds and 10 seconds after start-up. A message that came due while the hub was down is sent when it comes back if it is less than 24 hours late; later than that it is marked failed ("Missed ...") and never sent.
+- **Failures are shown, not retried forever.** A send that clearly never reached the service (connection refused, BlueBubbles or the WhatsApp connector unreachable) is retried twice, after 1 and 5 minutes. Anything else, including a timeout (the message may have gone out), fails at once with the error shown. Retry, Edit and Discard are available on a failed message.
+- **Time zones.** The API takes an absolute time (`sendAt`, ISO 8601 with an offset or Z). The apps show the picker in the device's own time zone and, when the hub's `TIME_ZONE` differs (`GET /api/status` returns it as `timeZone`), also show the time in the hub's zone.
+- Up to 200 messages can wait at once, up to a year ahead and at most 4000 characters each.
+
+API (all need a signed-in session; each change sends a live `scheduled` event with the thread id):
+
+| Request | What it does |
+|---|---|
+| `POST /api/threads/:tid/scheduled` `{text, sendAt, conversationId?, replyTo?}` | Schedule a message (201). `sendAt` must be 5 seconds to a year ahead. `replyTo` is a message id in that conversation. |
+| `GET /api/threads/:tid/scheduled` | Waiting, sending and failed messages of a thread, soonest first. |
+| `GET /api/scheduled` | The same for every thread, with `threadTitle`. |
+| `PATCH /api/scheduled/:id` `{text?, sendAt?}` | Change a message that is still scheduled (a failed one that gets a new `sendAt` is scheduled again). 409 if it was already sent or cancelled. |
+| `DELETE /api/scheduled/:id` | Cancel a scheduled message, or dismiss a failed one. |
+| `POST /api/scheduled/:id/send-now` | Send it now (also the retry for a failed one). |
+
+Each item has `id, tid, threadTitle, conversationId, service, text, replyToId, sendAt, status` (`scheduled`, `sending`, `sent`, `failed`, `cancelled`), `error, attempts, retryAt, createdAt, sentAt, messageId`. There is deliberately no MCP tool for this: Claude can only ask to send through the approval queue (`request_send_message`), so it cannot queue messages that go out later without you. BlueBubbles has its own scheduled messages feature, but the hub does not use it, so scheduling works for WhatsApp too and does not depend on the Mac.
+
 ## Archived chats
 
 **Archive** (web: the header button or right-click a chat; desktop: right-click a chat) moves a chat out of the list into an **Archived (n)** row at the top of the list, which opens the archived chats with a way back. `POST /api/threads/:tid/archive` and `/unarchive` apply to every chat merged into the thread (a person's iMessage and WhatsApp chats together). A thread counts as archived only when all its chats are, and a new message does not un-archive it (like WhatsApp's "keep chats archived"). `GET /api/threads?archived=1` lists archived threads; the normal list is unchanged apart from an `archived` flag, and its `x-archived-count` / `x-archived-unread` headers (also `GET /api/threads/archived-summary` as `archivedCount` and `archivedUnread`) feed the Archived row. Archived threads add nothing to unread counts and badges and never notify (the live `message` preview carries `archived`, like `muted`). Search still finds messages in archived chats. A live `conversation-updated` event refreshes other clients. No migration was needed: it uses the `conversation.archived` column.
