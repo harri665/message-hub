@@ -13,6 +13,14 @@ Rectangle {
     border.width: input.activeFocus ? 2 : 0
     border.color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.55)
 
+    // Over glass the field floats on the sidebar like a small piece of glass itself.
+    GlassEdge {
+        anchors.fill: parent
+        visible: Theme.glass && !input.activeFocus
+        radius: f.radius
+        rim: Theme.edgeLight * 0.8
+    }
+
     Glyph {
         id: icon
         name: "search"

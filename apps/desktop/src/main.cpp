@@ -14,6 +14,7 @@
 #include <QQuickItem>
 #include <QQuickItemGrabResult>
 #include <QQuickWindow>
+#include <QStyleHints>
 #include <QTimer>
 
 #include "app.h"
@@ -122,6 +123,7 @@ void App::showWindow(const QString &tid) {
                      Qt::QueuedConnection);
     m_engine->loadFromModule("MessageHub", "Main");
     Platform::instance()->forgetWindow();
+    Platform::instance()->prepareWindow(window());
     // The compositor knows the window once its first frame is up. The tags go out then, and once more a moment later
     // in case the compositor handled them before it had mapped the window (adding a tag twice changes nothing).
     if (QQuickWindow *w = window())
@@ -185,6 +187,11 @@ void App::dev(const QString &cmd) {
         if (auto *s = w->findChild<QObject *>("sidebar")) QMetaObject::invokeMethod(s, "openSettings");
     }
     else if (verb == "resize" && w) w->resize(arg.section('x', 0, 0).toInt(), arg.section('x', 1).toInt());
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    // scheme light|dark|system: override the system's colour mode for this app (MacShell's darkMode still wins).
+    else if (verb == "scheme")
+        QGuiApplication::styleHints()->setColorScheme(arg == "light" ? Qt::ColorScheme::Light : arg == "dark" ? Qt::ColorScheme::Dark : Qt::ColorScheme::Unknown);
+#endif
 }
 
 // ---------- attachment images ----------

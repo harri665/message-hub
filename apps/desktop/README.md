@@ -39,7 +39,9 @@ runs on. Both apps are built from the same commit and released together under on
 | Accent colour, 24-hour clock | from MacShell | macOS blue, 12-hour |
 | Notifications, click to open the chat | desktop notifications (D-Bus) | Windows notifications from the tray icon |
 | File picker | the desktop's (XDG portal) | Windows' file dialog |
-| Window glass | Hyprland + hyprglass (MacShell) | Windows 11 acrylic |
+| Window glass | Hyprland + hyprglass (MacShell) | Windows 11 acrylic (22H2 and later) |
+| *Automatic* glass means | on while MacShell uses Liquid Glass | on while Windows' transparency effects are on |
+| Rounded window corners | drawn by the app (12 px) | Windows 11's own (8 px) |
 | While the window is closed | keeps running, ~12 MB (restarts itself small) | keeps running in the tray (Open / Quit) |
 | Start at login | your compositor's config | set by the installer |
 | MacShell's Dynamic Island | yes | no (no MacShell) |
@@ -64,17 +66,35 @@ New features go into the shared code; something that can only exist on one syste
 ## Glass
 
 The gear at the top of the sidebar sets *Window glass* to **Automatic** (the default), **On** or **Off**. The choice
-is saved in `~/.config/message-hub/config.json` (`"glass": "on"` / `"off"`; no key means automatic), and
-`message-hub --glass on|off|auto` sets it from the command line, also for the instance that is already running.
+is saved in `~/.config/message-hub/config.json` (on Windows `%LOCALAPPDATA%\message-hub\config.json`; `"glass": "on"`
+/ `"off"`; no key means automatic), and `message-hub --glass on|off|auto` sets it from the command line, also for the
+instance that is already running.
 
 - **Automatic** follows MacShell: glass is on while MacShell uses its Liquid Glass style (`barStyle` is `liquid`, or
-  `compositorGlass` is on, in `~/.config/macbar/settings.json`), and changes with it live.
-- **On**: the window's surfaces become tints over the compositor's glass. The sidebar is the glassiest, the
-  conversation pane is denser so long chats stay easy to read, and bubbles, photos and the composer stay solid. How
-  much shows through follows MacShell's *glassOpacity*, and the window edge becomes a light rim set by *glassRim*.
+  `compositorGlass` is on, in `~/.config/macbar/settings.json`), and changes with it live. Without MacShell it follows
+  the system: on Windows 11 (22H2 or later) glass is on while *Settings > Personalization > Colors > Transparency
+  effects* is on, and follows that switch live. On Windows 10 and Windows 11 21H2, which have no window glass for
+  apps, and on Linux without MacShell, Automatic means off. The gear menu shows what Automatic currently gives.
+- **On**: the window's surfaces become tints over the glass. The sidebar is the glassiest, the conversation pane is
+  denser so long chats stay easy to read, and bubbles, photos and the composer's text field stay solid. The edges of
+  the window, the search field and the text field catch the light like the rim of a pane of glass (brightest at the
+  top left, fainter at the bottom right; `shaders/glassrim.frag`). How much shows through follows MacShell's
+  *glassOpacity* and how bright the rim is follows *glassRim* (without MacShell, their defaults).
 - **Off** is the plain opaque window, with no extra work for the app or the compositor.
 
-The glass itself is drawn by the compositor. On Hyprland with the hyprglass plugin (MacShell's setup), window glass is
+The glass itself is drawn by the system, never by the app: the app only tints it, so nothing is blurred or sampled on
+the app's side and the colours behind the window stay neutral.
+
+**Windows 11** draws an acrylic backdrop (`DWMWA_SYSTEMBACKDROP_TYPE`) behind the window: the windows and wallpaper
+behind it, blurred and saturated, light or dark to match the app. It stays while another window has the focus, as
+glass does on macOS (Windows would normally swap it for a flat colour then). Qt turns a frameless window with an alpha
+channel into a layered window, and Windows draws neither backdrops nor rounded corners for those, which is why the
+glass never showed before: on Windows 11 the app's window is now an ordinary resizable window whose frame is all
+client area (`src/platform_windows.cpp`), so it gets Windows 11's own rounded corners in both modes and the backdrop
+with glass on. If *Transparency effects* is off (or energy saver turns it off) while glass is on, Windows shows a flat
+colour instead of the backdrop.
+
+On Hyprland with the hyprglass plugin (MacShell's setup), window glass is
 opt-in per window: while glass is on, the app tags its own window `hyprglass_enabled` (and `hyprglass_theme_light` or
 `hyprglass_theme_dark` to match) over Hyprland's IPC socket, and takes the tags off when glass is turned off. Which
 glass it gets is up to the Hyprland config; MacShell's uses the frosted Liquid Glass of its assistant panel:
@@ -166,15 +186,18 @@ To keep notifications coming after login, start it in the background with your s
 
 For development, with `MESSAGE_HUB_DEV=1` set on the running instance, `message-hub --dev "<command>"` drives it:
 `grab <file.png>`, `send <text>`, `filter <text>`, `older`, `top`, `list`, `close`, `settings` (opens the gear menu),
-`login <server> <password>`, `logout`. `QT_QPA_PLATFORM=offscreen` runs it without a window, and `MESSAGE_HUB_SOCKET` and `XDG_CONFIG_HOME` /
-`XDG_CACHE_HOME` keep a test instance apart from your real one.
+`login <server> <password>`, `logout`, `resize <w>x<h>`, `scheme light|dark|system` (overrides the system's dark/light
+mode; Qt 6.8+). `QT_QPA_PLATFORM=offscreen` runs it without a window, and `MESSAGE_HUB_SOCKET` with
+`MESSAGE_HUB_PROFILE=<dir>` (session and cache in that folder, on Linux and Windows alike; `XDG_CONFIG_HOME` /
+`XDG_CACHE_HOME` also work on Linux) keep a test instance apart from your real one. `grab` saves only what Qt draws, so
+to judge the glass take a real screenshot.
 
 ## Layout
 
 | Path | What it is |
 |---|---|
 | `src/hub.*` | Hub API client: sign-in, inbox, open chat, sending, search, live socket, attachments, notifications and file picker (through `Platform`) |
-| `src/theme.*` | Reads and watches the MacShell settings; the glass option and the glass palette |
+| `src/theme.*` | Reads and watches the MacShell settings; the glass option (and what Automatic means) and the glass palette |
 | `src/listmodel.*` | List model that applies minimal changes, so lists keep their scroll position and recycle rows |
 | `src/main.cpp` | Single instance, window lifecycle (restart into background mode), attachment image provider |
 | `src/platform.h`, `src/platform_linux.cpp`, `src/platform_windows.cpp` | Everything that differs between Linux and Windows (see [Linux and Windows](#linux-and-windows)) |
@@ -184,3 +207,4 @@ For development, with `MESSAGE_HUB_DEV=1` set on the running instance, `message-
 | `../../.github/workflows/desktop.yml` | Builds, tests and releases both apps |
 | `qml/` | The UI |
 | `shaders/roundedimage.frag` | Rounded corners for photos without an offscreen layer |
+| `shaders/glassrim.frag`, `qml/GlassEdge.qml` | The lit rim of glass edges |

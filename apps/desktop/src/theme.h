@@ -15,7 +15,9 @@ class QJSEngine;
 // Glass (glassMode "auto" / "on" / "off", saved in the app's config by Hub): with glass on, the window's surfaces are
 // tints over the compositor's Liquid Glass (hyprglass on Hyprland, see App::syncGlass), set from MacShell's own
 // glassOpacity and glassRim: the sidebar is the glassiest, the conversation pane denser so it reads well. "auto" follows
-// MacShell: on while it uses its Liquid Glass style. With glass off every colour is exactly the opaque palette.
+// MacShell: on while it uses its Liquid Glass style; without MacShell it is on where the system offers window glass
+// (Windows 11 with transparency effects on, see Platform::systemGlass). With glass off every colour is exactly the
+// opaque palette.
 class Theme : public QObject {
     Q_OBJECT
     QML_ELEMENT
@@ -27,6 +29,7 @@ class Theme : public QObject {
     Q_PROPERTY(QString boldFont READ boldFont NOTIFY changed)
     Q_PROPERTY(QString glassMode READ glassMode WRITE setGlassMode NOTIFY glassModeChanged)
     Q_PROPERTY(bool glass READ glass NOTIFY changed)
+    Q_PROPERTY(bool autoGlass READ autoGlass NOTIFY changed)
     Q_PROPERTY(bool shellGlass READ shellGlass NOTIFY changed)
     Q_PROPERTY(bool hasShell READ hasShell NOTIFY changed)  // MacShell's settings were found
     Q_PROPERTY(QColor base READ base NOTIFY changed)
@@ -41,6 +44,8 @@ class Theme : public QObject {
     Q_PROPERTY(QColor ctrlSel READ ctrlSel NOTIFY changed)
     Q_PROPERTY(QColor border READ border NOTIFY changed)
     Q_PROPERTY(QColor rim READ rim NOTIFY changed)
+    Q_PROPERTY(qreal edgeLight READ edgeLight NOTIFY changed)
+    Q_PROPERTY(qreal edgeSheen READ edgeSheen NOTIFY changed)
     Q_PROPERTY(QColor lightOff READ lightOff NOTIFY changed)
     Q_PROPERTY(QColor bubbleIn READ bubbleIn NOTIFY changed)
     Q_PROPERTY(QColor sms READ sms NOTIFY changed)
@@ -59,7 +64,9 @@ public:
 
     QString glassMode() const { return m_glassMode; }
     void setGlassMode(const QString &mode);
-    bool glass() const { return m_glassMode == "on" || (m_glassMode == "auto" && m_shellGlass); }
+    bool glass() const { return m_glassMode == "on" || (m_glassMode == "auto" && autoGlass()); }
+    // What Automatic means right now: MacShell's Liquid Glass style, or the system's own window glass (Windows 11).
+    bool autoGlass() const { return m_shellGlass || m_systemGlass; }
     bool shellGlass() const { return m_shellGlass; }
     bool hasShell() const { return m_hasShell; }
 
@@ -90,6 +97,10 @@ public:
         if (!glass()) return border();
         return m_dark ? QColor::fromRgbF(1, 1, 1, 0.08f + 0.2f * m_glassRim) : QColor::fromRgbF(1, 1, 1, 0.3f + 0.5f * m_glassRim);
     }
+    // With glass, the edges of the window and of floating controls catch the light (GlassEdge.qml): how bright the lit
+    // part of the rim is, and the soft sheen inside it. Follows glassRim.
+    qreal edgeLight() const { return !glass() ? 0 : m_dark ? 0.25 + 0.45 * m_glassRim : 0.55 + 0.45 * m_glassRim; }
+    qreal edgeSheen() const { return !glass() ? 0 : m_dark ? 0.06 : 0.16; }
     QColor lightOff() const { return m_dark ? QColor::fromRgbF(1, 1, 1, 0.2f) : QColor::fromRgbF(0, 0, 0, 0.15f); }
     QColor bubbleIn() const { return m_dark ? QColor("#3A3A3C") : QColor("#E9E9EB"); }
     QColor sms() const { return m_dark ? QColor("#30D158") : QColor("#34C759"); }
@@ -119,6 +130,7 @@ private:
     QString m_boldFont;
     QString m_glassMode = QStringLiteral("auto");
     bool m_shellGlass = false;  // MacShell uses its Liquid Glass style
+    bool m_systemGlass = false;  // the system draws window glass by default (Platform::systemGlass)
     bool m_hasShell = false;
     float m_glassOpacity = 0.42f;
     float m_glassRim = 0.45f;
