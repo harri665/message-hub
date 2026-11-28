@@ -58,7 +58,7 @@ jobs:
       - uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
-          modules: qtwebsockets qtshadertools
+          modules: qtwebsockets qtshadertools qtimageformats  # qtimageformats: WebP, which the hub sends photos and profile pictures as
           cache: true
 
       - name: Tools (Ninja, Velopack library and vpk)

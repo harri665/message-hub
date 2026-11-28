@@ -151,8 +151,8 @@ screenshots are attached to the run (`screenshots-linux`, `screenshots-win`).
 
 ## Build from source
 
-Needs Qt 6.5 or newer (Quick, Network, WebSockets, DBus, ShaderTools), CMake and a C++20 compiler.
-On Arch: `pacman -S qt6-declarative qt6-websockets qt6-shadertools cmake ninja`.
+Needs Qt 6.5 or newer (Quick, Network, WebSockets, DBus, ShaderTools, and the Image Formats plugins for WebP), CMake and a C++20 compiler.
+On Arch: `pacman -S qt6-declarative qt6-websockets qt6-shadertools qt6-imageformats cmake ninja`.
 
 ```sh
 cd apps/desktop
