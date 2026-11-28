@@ -113,7 +113,7 @@ Item {
                 id: stack
                 y: row.hasReactions ? 12 : 0
                 x: row.fromMe ? parent.width - row.side - width : row.side + row.indent
-                width: Math.max(bubble.visible ? bubble.width : 0, atts.width, unsentText.visible ? unsentText.width : 0)
+                width: Math.max(bubble.visible ? bubble.width : 0, atts.width, unsentText.visible ? unsentText.width : 0, linkCard.width)
                 spacing: 3
 
                 Column {
@@ -218,7 +218,8 @@ Item {
 
                 Rectangle {
                     id: bubble
-                    visible: row.body.length > 0 && !row.unsent
+                    // With a link card, the bubble keeps only the words around the link (and goes away if there are none).
+                    visible: row.body.length > 0 && !row.unsent && !(linkCard.shown && linkCard.restHtml.length === 0)
                     x: row.fromMe ? stack.width - width : 0
                     readonly property real pad: 12
                     width: Math.min(row.maxBubble, Math.max(msg.implicitWidth + pad * 2, quote.visible ? quote.implicitWidth + pad * 2 : 0, 36))
@@ -253,7 +254,7 @@ Item {
                             id: msg
                             x: row.jumbo ? 0 : bubble.pad
                             width: bubble.width - (row.jumbo ? 0 : bubble.pad * 2)
-                            text: row.html
+                            text: linkCard.shown ? linkCard.restHtml : row.html
                             textFormat: Text.StyledText
                             wrapMode: Text.Wrap
                             color: row.fromMe ? "white" : Theme.text
@@ -276,6 +277,18 @@ Item {
                         acceptedButtons: Qt.RightButton
                         onClicked: mouse => row.openMenu(bubble, mouse.x, mouse.y)
                     }
+                }
+
+                LinkCard {
+                    id: linkCard
+                    x: row.fromMe ? stack.width - width : 0
+                    messageId: row.id
+                    wanted: row.kind === "text" && !row.unsent && /(https?:\/\/|www\.)\S/i.test(row.body)
+                    fromMe: row.fromMe
+                    tint: row.fromMe ? row.svcColor : Theme.bubbleIn
+                    maxWidth: row.maxBubble
+                    dimmed: row.pending && !row.failed
+                    onMenuRequested: (x, y) => row.openMenu(linkCard, x, y)
                 }
 
                 Text {

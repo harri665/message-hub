@@ -252,6 +252,23 @@ QQuickImageResponse *AttachmentImages::requestImageResponse(const QString &id, c
         }, Qt::QueuedConnection);
         return r;
     }
+    // image://att/link/<message id>/<image|icon>?v=<version>: the picture or icon of a link card.
+    if (id.startsWith(QLatin1String("link/"))) {
+        const QString spec = id.section('?', 0, 0).mid(5);
+        const qint64 messageId = spec.section('/', 0, 0).toLongLong();
+        const QString kind = spec.section('/', 1);
+        QMetaObject::invokeMethod(Hub::instance(), [r, messageId, kind, decode] {
+            Hub::instance()->fetchLinkImage(messageId, kind, [r, decode](const QString &path, const QString &err) {
+                if (!err.isEmpty()) {
+                    r->error = err;
+                    r->done();
+                    return;
+                }
+                decode(path);
+            });
+        }, Qt::QueuedConnection);
+        return r;
+    }
     const qint64 att = id.section('?', 0, 0).toLongLong();
     const bool retry = id.contains("retry=");
     // Ask the hub for the smallest resized copy that covers the size on screen (older hubs ignore it).
