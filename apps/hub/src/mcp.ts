@@ -119,9 +119,13 @@ function buildServer(requestedBy: string) {
       description:
         'Full-text search over message text, newest first. Every word must appear; words match as prefixes ("pizz" finds "pizza"). ' +
         'Use "quoted words" for a phrase and -word to exclude a word. Filter by conversation, service, sender or date. ' +
+        'The query also understands Discord-style filters written inside it: from: <name, number or me>, in: <chat or person name>, ' +
+        'has: image|video|audio|file|link|sticker|attachment (repeat to require several), before:/after:/during: <2026-11-25, 2026-11, nov 25, yesterday>, ' +
+        'is: unread|reply, service: imessage|sms|whatsapp. Values with spaces go in quotes, e.g. from:"Cole Writer" has:image. ' +
+        'The query can be only filters, e.g. "has: image in: Mom". Anything else is searched as words. ' +
         'Returns message ids; pass one to read_conversation as around_message_id to see the surrounding messages.',
       inputSchema: {
-        query: z.string().min(1).describe('Words to find'),
+        query: z.string().min(1).describe('Words to find, optionally with filters such as "from: mom has: image after: nov 25"'),
         conversation: z.string().regex(/^[pc]\d+$/).optional().describe('Limit to one conversation id, e.g. p12'),
         service: z.enum(['imessage', 'sms', 'rcs', 'whatsapp', 'apple']).optional().describe('apple means iMessage, SMS and RCS'),
         from_me: z.boolean().optional().describe('true: only messages the user sent; false: only messages they received'),
