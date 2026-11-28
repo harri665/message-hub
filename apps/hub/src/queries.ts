@@ -5,7 +5,7 @@ import { q, q1 } from './db.js';
 
 export interface ConvRow {
   id: number; network: 'apple' | 'whatsapp'; source_id: string; title: string | null; is_group: boolean;
-  last_message_at: string | null; unread_count: number; muted_until: string | null;
+  last_message_at: string | null; unread_count: number; muted_until: string | null; archived: boolean;
 }
 
 export const MESSAGE_COLUMNS = `
@@ -56,7 +56,7 @@ async function loadThreadConversations(tid: string): Promise<ConvRow[]> {
 
 // ---------- inbox ----------
 
-export interface ThreadFilter { limit?: number; offset?: number; unreadOnly?: boolean; match?: string; tid?: string }
+export interface ThreadFilter { limit?: number; offset?: number; unreadOnly?: boolean; match?: string; tid?: string; archived?: boolean }
 
 /**
  * Threads newest first. `match` keeps threads whose name, member names or addresses contain the text.
@@ -67,7 +67,7 @@ export function listThreads(f: ThreadFilter = {}) {
   const limit = Math.min(f.limit ?? 100, 500);
   const match = f.match?.trim() ? `%${f.match.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
   const digits = f.match?.replace(/\D/g, '') ?? '';
-  const args = [limit, f.offset ?? 0, !!f.unreadOnly, match, digits, f.tid ?? null];
+  const args = [limit, f.offset ?? 0, !!f.unreadOnly, match, digits, f.tid ?? null, !!f.archived];
   return cached(`threads:${JSON.stringify(args)}`, () => q(THREADS_SQL, args));
 }
 
@@ -86,11 +86,13 @@ const THREADS_SQL = `
                   max(c.title) filter (where c.is_group) as group_title,
                   -- A thread is muted when every chat in it is (a person's iMessage and WhatsApp chats can differ).
                   bool_and(coalesce(c.muted_until > now(), false)) as muted,
-                  min(c.muted_until) filter (where c.muted_until > now()) as muted_until
+                  min(c.muted_until) filter (where c.muted_until > now()) as muted_until,
+                  -- Archived only when every chat in it is. A new message never un-archives it.
+                  bool_and(c.archived) as archived
            from conversation c join ct on ct.conversation_id = c.id
-           where not c.archived
            group by ct.tid
            having max(c.last_message_at) is not null
+              and ($6::text is not null or bool_and(c.archived) = $7)
          ),
          gm as (
            select t.tid, string_agg(coalesce(mpn.name, mpa.address, h.address), ', ') as names
@@ -126,7 +128,7 @@ const THREADS_SQL = `
            order by n.last_at desc
            limit $1 offset $2
          )
-    select p.tid, p.is_group, p.last_at, p.unread, p.conversation_ids, p.networks, p.title, p.muted, p.muted_until,
+    select p.tid, p.is_group, p.last_at, p.unread, p.conversation_ids, p.networks, p.title, p.muted, p.muted_until, p.archived,
            ${THREAD_AVATAR_SQL('p.person_id', 'p.conversation_ids[1]')} as avatar,
            lm.body as last_body, lm.from_me as last_from_me, lm.service as last_service, lm.kind as last_kind,
            lm.unsent as last_unsent, lm.has_attachment as last_has_attachment, lm.sender_name as last_sender_name
@@ -142,6 +144,21 @@ const THREADS_SQL = `
       order by m.sent_at desc limit 1
     ) lm on true
     order by p.last_at desc`;
+
+/** How many threads are archived, and how many unread messages they hold (shown beside the Archived row). */
+export function archivedSummary() {
+  return cached('archived-summary', async () => {
+    const r = await q1<{ n: number; unread: number }>(
+      `select count(*)::int as n, coalesce(sum(u), 0)::int as unread from (
+         select sum(c.unread_count) as u
+         from conversation c join conversation_thread ct on ct.conversation_id = c.id
+         group by ct.tid
+         having max(c.last_message_at) is not null and bool_and(c.archived)
+       ) a`,
+    );
+    return { archivedCount: r?.n ?? 0, archivedUnread: r?.unread ?? 0 };
+  });
+}
 
 // ---------- messages ----------
 

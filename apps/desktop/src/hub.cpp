@@ -366,6 +366,10 @@ void Hub::signedOut() {
     m_reconnect.stop();
     closeThread();
     m_allThreads.clear();
+    m_archivedThreads.clear();
+    m_showArchived = false;
+    m_archivedCount = m_archivedUnread = 0;
+    emit archivedChanged();
     rebuildThreadModel();
     QDir(cacheFile({})).removeRecursively();  // cached messages belong to the session
     setToken({});
@@ -394,6 +398,54 @@ void Hub::loadThreads() {
         m_threadsReply = nullptr;
         applyThreads(toRows(doc), true);
     }, [this](int, const QString &) { m_threadsReply = nullptr; });
+    loadArchived();
+}
+
+// The Archived row's numbers, and (while that list is showing) the archived chats themselves.
+void Hub::loadArchived() {
+    const int gen = m_generation;
+    handle(call("GET", "/api/threads/archived-summary"), [this, gen](const QJsonDocument &doc) {
+        if (gen != m_generation) return;
+        const auto o = doc.object();
+        const int n = o.value("archivedCount").toInt(), u = o.value("archivedUnread").toInt();
+        if (n == m_archivedCount && u == m_archivedUnread) return;
+        m_archivedCount = n;
+        m_archivedUnread = u;
+        emit archivedChanged();
+        if (m_showArchived && n == 0) setShowArchived(false);
+    });
+    if (!m_showArchived || m_archivedReply) return;
+    m_archivedReply = call("GET", "/api/threads?limit=300&archived=1");
+    handle(m_archivedReply, [this, gen](const QJsonDocument &doc) {
+        m_archivedReply = nullptr;
+        if (gen != m_generation) return;
+        m_archivedThreads.clear();
+        for (const auto &r : toRows(doc)) m_archivedThreads << decorateThread(r);
+        rebuildThreadModel();
+    }, [this](int, const QString &) { m_archivedReply = nullptr; });
+}
+
+void Hub::setShowArchived(bool show) {
+    if (show == m_showArchived) return;
+    m_showArchived = show;
+    m_archivedThreads.clear();
+    emit archivedChanged();
+    rebuildThreadModel();
+    if (show) loadArchived();
+}
+
+void Hub::archiveThread(const QString &tid, bool archive) {
+    // Move it between the lists at once; the hub's answer settles the real state.
+    auto &from = m_showArchived ? m_archivedThreads : m_allThreads;
+    for (int i = 0; i < from.size(); ++i)
+        if (from.at(i).value("tid") == tid) { from.removeAt(i); break; }
+    m_archivedCount += archive ? 1 : -1;
+    if (m_archivedCount < 0) m_archivedCount = 0;
+    emit archivedChanged();
+    rebuildThreadModel();
+    const QString path = QStringLiteral("/api/threads/%1/%2").arg(tid, archive ? "archive" : "unarchive");
+    handle(call("POST", path, "{}"), [this](const QJsonDocument &) { scheduleThreads(0); },
+           [this](int, const QString &e) { setError(e); scheduleThreads(0); });
 }
 
 QVariantMap Hub::decorateThread(QVariantMap t) const {
@@ -456,13 +508,14 @@ void Hub::rebuildThreadModel() {
         m_unreadTotal = unread;
         emit unreadTotalChanged();
     }
+    const auto &source = m_showArchived ? m_archivedThreads : m_allThreads;
     if (m_filter.trimmed().isEmpty()) {
-        m_threadModel.setRows(m_allThreads);
+        m_threadModel.setRows(source);
         return;
     }
     const QString f = m_filter.trimmed();
     QList<QVariantMap> rows;
-    for (const auto &t : std::as_const(m_allThreads))
+    for (const auto &t : std::as_const(source))
         if (t.value("title").toString().contains(f, Qt::CaseInsensitive)) rows << t;
     m_threadModel.setRows(rows);
 }
@@ -1112,8 +1165,8 @@ void Hub::onLive(const QString &text) {
         }
         // The local patch shows it at once; the hub's own list follows a little later.
         scheduleThreads(patched ? 5000 : 300);
-        // Chats muted on the phone stay quiet here too: no notification and no island banner, only the unread count.
-        if (!fromMe && !preview.isEmpty() && !preview.value("muted").toBool()) {
+        // Chats muted on the phone and archived chats stay quiet here too: no notification and no island banner.
+        if (!fromMe && !preview.isEmpty() && !preview.value("muted").toBool() && !preview.value("archived").toBool()) {
             QVariantMap m = preview;
             QString who = preview.value("sender_name").toString();
             if (who.isEmpty()) who = preview.value("title").toString();

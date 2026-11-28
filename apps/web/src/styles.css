@@ -741,3 +741,21 @@ video.att-media { object-fit: contain; }
 }
 .msg.in .pin-mark { right: -6px; }
 .msg.out .pin-mark { left: -6px; }
+
+/* ---------- archive ---------- */
+.archived-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 40px; }
+.archived-label { font-weight: 600; font-size: 14px; }
+.ctx-menu { position: fixed; z-index: 30; right: auto; width: auto; min-width: 150px; }
+.toast {
+  position: fixed;
+  z-index: 40;
+  left: 24px;
+  bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 8px 8px 16px;
+  border-radius: 999px;
+  background: var(--glass-strong);
+  font-size: 13px;
+}

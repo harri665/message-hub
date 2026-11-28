@@ -106,6 +106,18 @@ Canvas {
             ctx.stroke();
             break;
         }
+        case "archive": {
+            // a lidded box
+            ctx.rect(w * 0.1, h * 0.16, w * 0.8, h * 0.22);
+            ctx.moveTo(w * 0.18, h * 0.38); ctx.lineTo(w * 0.18, h * 0.84); ctx.lineTo(w * 0.82, h * 0.84); ctx.lineTo(w * 0.82, h * 0.38);
+            ctx.moveTo(w * 0.4, h * 0.56); ctx.lineTo(w * 0.6, h * 0.56);
+            ctx.stroke();
+            break;
+        }
+        case "back":
+            ctx.moveTo(w * 0.62, h * 0.18); ctx.lineTo(w * 0.3, h * 0.5); ctx.lineTo(w * 0.62, h * 0.82);
+            ctx.stroke();
+            break;
         case "gear": {
             // a filled cog with eight teeth and a round hole
             const cx = w / 2, cy = h / 2, ro = w * 0.5, ri = w * 0.37, n = 8;

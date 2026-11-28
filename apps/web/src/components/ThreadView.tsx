@@ -242,6 +242,7 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
             {t?.isGroup && t.members.length > 0 && <span> with {t.members.length} people</span>}
           </p>
         </div>
+        {t && <ArchiveControl tid={tid} archived={t.archived} hasWhatsApp={t.conversations.some((c) => c.network === 'whatsapp')} />}
         {t && <MuteControl tid={tid} muted={t.muted} hasWhatsApp={t.conversations.some((c) => c.network === 'whatsapp')} />}
         <button className="pill-btn" onClick={() => setFindOpen((o) => !o)} aria-expanded={findOpen}>
           {findOpen ? 'Done' : 'Search'}
@@ -324,6 +325,35 @@ function FindInThread({ tid, onPick, onClose }: { tid: string; onPick: (id: numb
         </div>
       )}
     </div>
+  );
+}
+
+/** Archive or unarchive this conversation. New messages never un-archive it. WhatsApp chats change on the account too. */
+function ArchiveControl({ tid, archived, hasWhatsApp }: { tid: string; archived: boolean; hasWhatsApp: boolean }) {
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const toggle = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.archive(tid, !archived);
+      await Promise.all([qc.invalidateQueries({ queryKey: ['thread', tid] }), qc.invalidateQueries({ queryKey: ['threads'] })]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not change the archive setting');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      className="pill-btn"
+      disabled={busy}
+      onClick={toggle}
+      title={error ?? (hasWhatsApp ? 'Also archives it in WhatsApp on your phone.' : 'Archived chats move out of the list and stay quiet.')}
+    >
+      {archived ? (busy ? 'Unarchiving' : 'Unarchive') : busy ? 'Archiving' : 'Archive'}
+    </button>
   );
 }
 

@@ -18,6 +18,7 @@ export interface ThreadSummary {
   last_sender_name: string | null;
   muted: boolean;
   muted_until: string | null;
+  archived: boolean;
   /** Version of the profile photo (see /api/avatars/:tid), or null when there is none. */
   avatar: string | null;
 }
@@ -27,6 +28,7 @@ export interface ThreadDetail {
   isGroup: boolean;
   avatar: string | null;
   muted: boolean;
+  archived: boolean;
   title: string;
   conversations: { id: number; network: Network; title: string | null; lastMessageAt: string | null; unread: number; lastService: Service }[];
   members: { id: number; network: Network; address: string; name: string | null }[];
@@ -138,7 +140,9 @@ export const api = {
     request<{ ok: true }>('/api/settings/bluebubbles', { method: 'PUT', body: JSON.stringify({ url, password }) }),
   logout: () => post('/api/auth/logout'),
   status: () => request<Status>('/api/status'),
-  threads: () => request<ThreadSummary[]>('/api/threads?limit=300'),
+  threads: (archived = false) => request<ThreadSummary[]>(`/api/threads?limit=300${archived ? '&archived=1' : ''}`),
+  archivedSummary: () => request<{ archivedCount: number; archivedUnread: number }>('/api/threads/archived-summary'),
+  archive: (tid: string, archived: boolean) => post(`/api/threads/${tid}/${archived ? 'archive' : 'unarchive'}`),
   thread: (tid: string) => request<ThreadDetail>(`/api/threads/${tid}`),
   messages: (tid: string, page: MessagePage = {}) => {
     const qs = new URLSearchParams({ limit: '60' });

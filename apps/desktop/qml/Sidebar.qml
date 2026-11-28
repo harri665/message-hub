@@ -119,9 +119,61 @@ Rectangle {
         cacheBuffer: 400
         boundsBehavior: Flickable.StopAtBounds
         footer: side.searching ? resultsFooter : null
+        // The Archived row (inbox) or the way back (archived list); hidden while searching.
+        header: Item {
+            width: list.width
+            height: !side.searching && (Hub.showArchived || Hub.archivedCount > 0) ? 44 : 0
+            visible: height > 0
+            Rectangle {
+                anchors.fill: parent
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                radius: 10
+                color: archMa.containsMouse ? Theme.ctrl : "transparent"
+            }
+            Glyph {
+                x: 22
+                anchors.verticalCenter: parent.verticalCenter
+                name: Hub.showArchived ? "back" : "archive"
+                width: 16
+                height: 16
+                stroke: 1.5
+                color: Theme.text2
+            }
+            Text {
+                x: 50
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Archived"
+                color: Theme.text
+                font.family: Theme.boldFont
+                font.weight: Font.DemiBold
+                font.pixelSize: 13
+            }
+            Text {
+                anchors.right: parent.right
+                anchors.rightMargin: 22
+                anchors.verticalCenter: parent.verticalCenter
+                visible: !Hub.showArchived
+                text: (Hub.archivedUnread > 0 ? Hub.archivedUnread + " unread  " : "") + Hub.archivedCount
+                color: Theme.text2
+                font.pixelSize: 12
+            }
+            MouseArea {
+                id: archMa
+                anchors.fill: parent
+                hoverEnabled: true
+                onClicked: Hub.setShowArchived(!Hub.showArchived)
+            }
+        }
         delegate: ThreadRow {
+            id: threadRow
             width: list.width
             onClicked: side.open(tid)
+            onContextRequested: (x, y) => {
+                const p = threadRow.mapToItem(side.menu, x, y);
+                const archived = Hub.showArchived;
+                side.menu.open(p.x, p.y, [{ label: archived ? "Unarchive" : "Archive", action: () => Hub.archiveThread(threadRow.tid, !archived) }]);
+            }
         }
         // Thread rows animate into their new place when a message moves a chat to the top.
         move: Transition { NumberAnimation { properties: "y"; duration: 180; easing.type: Easing.OutCubic } }
@@ -130,7 +182,7 @@ Rectangle {
         Text {
             anchors.centerIn: parent
             visible: list.count === 0 && !side.searching
-            text: "No conversations yet"
+            text: Hub.showArchived ? "No archived conversations" : "No conversations yet"
             color: Theme.text3
             font.pixelSize: 13
         }

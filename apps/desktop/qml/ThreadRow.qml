@@ -14,6 +14,7 @@ Item {
     required property bool isGroup
     required property bool muted
     signal clicked()
+    signal contextRequested(real x, real y)
 
     readonly property bool selected: Hub.currentTid === tid
     readonly property color fg: selected ? "white" : Theme.text
@@ -121,6 +122,7 @@ Item {
         id: ma
         anchors.fill: parent
         hoverEnabled: true
-        onClicked: row.clicked()
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        onClicked: mouse => mouse.button === Qt.RightButton ? row.contextRequested(mouse.x, mouse.y) : row.clicked()
     }
 }

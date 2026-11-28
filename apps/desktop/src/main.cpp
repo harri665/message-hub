@@ -174,6 +174,9 @@ void App::dev(const QString &cmd) {
     else if (verb == "older") Hub::instance()->loadOlder();
     else if (verb == "open") Hub::instance()->openThread(arg);
     else if (verb == "reveal") Hub::instance()->revealMessage(arg.toLongLong());
+    else if (verb == "archive") Hub::instance()->archiveThread(arg, true);
+    else if (verb == "unarchive") Hub::instance()->archiveThread(arg, false);
+    else if (verb == "archived") Hub::instance()->setShowArchived(arg != "off");
     else if (verb == "pin") Hub::instance()->pinMessage(arg.toLongLong(), true);
     else if (verb == "unpin") Hub::instance()->pinMessage(arg.toLongLong(), false);
     else if (verb == "close") closeWindow();

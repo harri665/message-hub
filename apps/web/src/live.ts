@@ -12,6 +12,7 @@ interface LivePreview {
   title: string | null;
   has_attachment: boolean;
   muted?: boolean;
+  archived?: boolean;
 }
 
 type LiveMsg =
@@ -104,8 +105,8 @@ export function useLive(enabled: boolean, openTid: string | null) {
 
 function notify(p: LivePreview, openTid: string | null) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
-  // Muted chats (in WhatsApp, or muted here) never notify.
-  if (p.muted) return;
+  // Muted chats (in WhatsApp, or muted here) and archived chats never notify.
+  if (p.muted || p.archived) return;
   if (!document.hidden && p.tid === openTid) return;
   const who = p.sender_name ?? 'Someone';
   const title = p.is_group && p.title ? `${who} in ${p.title}` : who;

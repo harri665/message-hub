@@ -23,6 +23,7 @@ type WAEvent =
   | { type: 'contact'; address: string; name: string; source: NameSource }
   | { type: 'chat'; chat: string; name: string; isGroup: boolean }
   | { type: 'picture'; address: string; chat: string }
+  | { type: 'archive'; chat: string; archived: boolean; fromFullSync: boolean }
   | { type: 'status' };
 
 export interface WAStatus {
@@ -64,6 +65,8 @@ export class WhatsApp {
     setInterval(() => this.kick(), 30_000).unref();
     this.syncMutes().catch((e) => this.log.warn({ err: String(e) }, 'WhatsApp mute sync failed'));
     setInterval(() => this.syncMutes().catch((e) => this.log.warn({ err: String(e) }, 'WhatsApp mute sync failed')), 60_000).unref();
+    this.syncArchives().catch((e) => this.log.warn({ err: String(e) }, 'WhatsApp archive sync failed'));
+    setInterval(() => this.syncArchives().catch((e) => this.log.warn({ err: String(e) }, 'WhatsApp archive sync failed')), 60_000).unref();
     setTimeout(() => this.syncAvatars(), 30_000).unref();
     setInterval(() => this.syncAvatars(), 5 * 60_000).unref();
   }
@@ -157,6 +160,54 @@ export class WhatsApp {
     );
     for (const c of changed) emitLive({ type: 'conversation-updated', conversationId: c.id });
     if (changed.length) this.log.info({ count: changed.length }, 'WhatsApp mute settings updated');
+  }
+
+  /**
+   * Copies each chat's archive flag from the WhatsApp account (whatsmeow keeps it in whatsmeow_chat_settings, updated
+   * by archive events and the full app-state sync) onto the matching conversation. Chats with no stored setting are
+   * left as they are, so archiving in the hub is never undone by a chat WhatsApp has not mentioned.
+   */
+  async syncArchives() {
+    const exists = await q1(`select 1 from information_schema.tables where table_name = 'whatsmeow_chat_settings'`);
+    if (!exists) return;
+    const changed = await q<{ id: number }>(
+      `with settings as (
+         select case
+                  when s.chat_jid like '%@lid' then coalesce(l.pn || '@s.whatsapp.net', s.chat_jid)
+                  else s.chat_jid
+                end as chat,
+                s.archived
+         from whatsmeow_chat_settings s
+         left join whatsmeow_lid_map l on s.chat_jid like '%@lid' and l.lid = split_part(s.chat_jid, '@', 1)
+       ),
+       target as (
+         select c.id, bool_or(st.archived) as archived
+         from conversation c join settings st on st.chat = c.source_id
+         where c.network = 'whatsapp'
+         group by c.id
+       )
+       update conversation c set archived = t.archived
+       from target t
+       where c.id = t.id and c.archived is distinct from t.archived
+       returning c.id`,
+    );
+    for (const c of changed) emitLive({ type: 'conversation-updated', conversationId: c.id });
+    if (changed.length) this.log.info({ count: changed.length }, 'WhatsApp archive settings updated');
+  }
+
+  /** Archives or unarchives a chat on the WhatsApp account itself. */
+  async setArchive(conversationId: number, chat: string, archived: boolean) {
+    const last = await q1<{ source_id: string; from_me: boolean; sent_at: string }>(
+      'select source_id, from_me, sent_at from message where conversation_id = $1 order by sent_at desc limit 1',
+      [conversationId],
+    );
+    await this.call('/archive', {
+      method: 'POST',
+      body: JSON.stringify({
+        chat, archived,
+        lastId: last?.source_id ?? '', lastFromMe: last?.from_me ?? false, lastTimestamp: last ? new Date(last.sent_at).getTime() : 0,
+      }),
+    });
   }
 
   /** Mutes or unmutes a chat on the WhatsApp account itself. until: null means always. */
@@ -262,6 +313,15 @@ export class WhatsApp {
         const c = await q1<{ id: number }>(`select id from conversation where network = 'whatsapp' and source_id = $1`, [ev.chat]);
         if (c) await expireAvatar({ conversationId: c.id });
         setTimeout(() => this.syncAvatars(), 5000).unref();
+        break;
+      }
+      case 'archive': {
+        // Archived or unarchived on the phone (or another device), live or as part of the full sync.
+        const c = await q1<{ id: number }>(
+          'update conversation set archived = $2 where network = $1 and source_id = $3 and archived is distinct from $2 returning id',
+          ['whatsapp', ev.archived, ev.chat],
+        );
+        if (c) emitLive({ type: 'conversation-updated', conversationId: c.id });
         break;
       }
       case 'status':
