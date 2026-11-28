@@ -49,7 +49,7 @@ Item {
             visible: view.open
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                width: Math.min(implicitWidth, bar.width - 40)
+                width: Math.min(implicitWidth, bar.width - 40 - (Platform.windowControls === "windows" ? 2 * 100 : 0))
                 elide: Text.ElideRight
                 text: Hub.current.title ?? ""
                 color: Theme.text

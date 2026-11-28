@@ -18,6 +18,7 @@
 #include <iterator>
 
 #include <windows.h>
+#include <windowsx.h>
 #include <dwmapi.h>
 
 namespace {
@@ -39,7 +40,66 @@ class WindowFrame;
 WindowFrame *installWindowFrame();
 }  // namespace
 
+// Windows 11 shows its Snap Layouts flyout over a window's maximize button, and it finds that button by asking the window
+// where a point is (WM_NCHITTEST). The window is frameless and draws its own buttons, so the answer comes from here: over
+// the maximize button, say HTMAXBUTTON. The system then owns that button's pointer events, which are passed on to the QML.
+class CaptionFilter : public QAbstractNativeEventFilter {
+public:
+    explicit CaptionFilter(Platform *p) : platform(p) {}
+    HWND hwnd = nullptr;
+    QRectF rect;  // the maximize button, in device independent pixels from the window's top-left
+    qreal scale = 1;
+    bool hover = false, down = false;
+
+    void set(bool h, bool d) {
+        if (h == hover && d == down) return;
+        hover = h;
+        down = d;
+        emit platform->maximizeStateChanged();
+    }
+    bool nativeEventFilter(const QByteArray &type, void *message, qintptr *result) override {
+        if (!hwnd || rect.isEmpty() || type != "windows_generic_MSG") return false;
+        const MSG *m = static_cast<const MSG *>(message);
+        if (m->hwnd != hwnd) return false;
+        switch (m->message) {
+        case WM_NCHITTEST: {
+            RECT r;
+            GetWindowRect(hwnd, &r);
+            const QPointF p((GET_X_LPARAM(m->lParam) - r.left) / scale, (GET_Y_LPARAM(m->lParam) - r.top) / scale);
+            if (!rect.contains(p)) return false;
+            if (result) *result = HTMAXBUTTON;
+            return true;
+        }
+        case WM_NCMOUSEMOVE:
+            if (m->wParam != HTMAXBUTTON) { set(false, false); return false; }
+            {
+                TRACKMOUSEEVENT t{sizeof t, TME_LEAVE | TME_NONCLIENT, hwnd, 0};
+                TrackMouseEvent(&t);
+            }
+            set(true, down);
+            return false;  // the system itself shows the Snap Layouts flyout once the pointer rests here
+        case WM_NCMOUSELEAVE:
+            set(false, false);
+            return false;
+        case WM_NCLBUTTONDOWN:
+            if (m->wParam != HTMAXBUTTON) return false;
+            set(true, true);
+            if (result) *result = 0;
+            return true;
+        case WM_NCLBUTTONUP:
+            if (m->wParam != HTMAXBUTTON) return false;
+            set(true, false);
+            emit platform->maximizeClicked();
+            if (result) *result = 0;
+            return true;
+        }
+        return false;
+    }
+    Platform *platform;
+};
+
 struct Platform::Private {
+    CaptionFilter *filter = nullptr;
     QSystemTrayIcon *tray = nullptr;
     QMenu *menu = nullptr;
     QString lastKey;  // the tray can only show one message at a time; a click on it opens this chat
@@ -73,6 +133,23 @@ void Platform::setAutostart(bool on) {
 }
 
 bool Platform::hasTray() const { return true; }
+QString Platform::windowControls() const { return "windows"; }
+bool Platform::maximizeHover() const { return d->filter && d->filter->hover; }
+bool Platform::maximizeDown() const { return d->filter && d->filter->down; }
+
+void Platform::setMaximizeButton(QQuickWindow *w, const QRectF &rect) {
+    if (!w) return;
+    if (!d->filter) {
+        d->filter = new CaptionFilter(this);
+        qApp->installNativeEventFilter(d->filter);
+    }
+    d->filter->hwnd = reinterpret_cast<HWND>(w->winId());
+    d->filter->rect = rect;
+    d->filter->scale = w->devicePixelRatio();
+    // The flyout only appears for a window that can be maximized by the system.
+    const LONG_PTR style = GetWindowLongPtrW(d->filter->hwnd, GWL_STYLE);
+    if (!(style & WS_MAXIMIZEBOX)) SetWindowLongPtrW(d->filter->hwnd, GWL_STYLE, style | WS_MAXIMIZEBOX | WS_MINIMIZEBOX);
+}
 
 void Platform::init() {
     d->tray = new QSystemTrayIcon(QIcon(":/qt/qml/MessageHub/icon.png"), qApp);

@@ -53,6 +53,7 @@ qt_add_qml_module(message-hub
     qml/MessageRow.qml
     qml/Composer.qml
     qml/Avatar.qml
+    qml/CaptionButtons.qml
     qml/TrafficLights.qml
     qml/SearchField.qml
     qml/Field.qml

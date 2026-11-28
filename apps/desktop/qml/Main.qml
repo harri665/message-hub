@@ -31,7 +31,7 @@ Window {
     Rectangle {
         id: frame
         anchors.fill: parent
-        radius: Platform.windowRadius
+        radius: win.visibility === Window.Maximized ? 0 : Platform.windowRadius
         // With glass the sidebar and the conversation pane tint the compositor's glass each in their own strength.
         color: Theme.glass ? "transparent" : Theme.bg
         border.width: 1
@@ -109,6 +109,18 @@ Window {
         }
 
         Menu { id: popup }
+
+        // Windows: the caption buttons, flush in the top-right corner, over everything.
+        CaptionButtons {
+            anchors.top: parent.top
+            anchors.right: parent.right
+            anchors.topMargin: 1
+            anchors.rightMargin: 1
+            z: 101
+            corner: frame.radius
+            window: win
+            visible: Platform.windowControls === "windows"
+        }
 
         // Resize edges (the window has no frame of its own).
         MouseArea { x: parent.width - 10; y: parent.height - 10; width: 10; height: 10; z: 100; cursorShape: Qt.SizeFDiagCursor; onPressed: win.startSystemResize(Qt.BottomEdge | Qt.RightEdge) }
