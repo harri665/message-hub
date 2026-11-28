@@ -204,40 +204,60 @@ AttachmentImages::AttachmentImages() { m_pool.setMaxThreadCount(2); }
 
 QQuickImageResponse *AttachmentImages::requestImageResponse(const QString &id, const QSize &requested) {
     auto *r = new AttachmentResponse;  // the engine keeps it alive until finished() (also when cancelled)
+    QThreadPool *pool = &m_pool;
+    // Decodes a cached file on a worker thread, at no more than the size the view asked for.
+    auto decode = [r, requested, pool](const QString &path) {
+        pool->start([r, path, requested] {
+            QImageReader reader(path);
+            // Cached files have no extension: name the format from the content, so Qt doesn't try every plugin.
+            static const QMimeDatabase mimes;
+            const QList<QByteArray> formats = QImageReader::imageFormatsForMimeType(mimes.mimeTypeForFile(path, QMimeDatabase::MatchContent).name().toLatin1());
+            if (!formats.isEmpty()) reader.setFormat(formats.first());
+            reader.setAutoTransform(true);
+            QSize size = reader.size();
+            if (size.isValid() && requested.isValid() && (requested.width() > 0 || requested.height() > 0)) {
+                QSize box(requested.width() > 0 ? requested.width() : INT_MAX, requested.height() > 0 ? requested.height() : INT_MAX);
+                if (reader.transformation() & QImageIOHandler::TransformationRotate90) size.transpose();
+                if (size.width() > box.width() || size.height() > box.height()) {
+                    QSize scaled = size.scaled(box, Qt::KeepAspectRatio);
+                    if (reader.transformation() & QImageIOHandler::TransformationRotate90) scaled.transpose();
+                    reader.setScaledSize(scaled);
+                }
+            }
+            r->image = reader.read();
+            if (r->image.isNull()) r->error = reader.errorString();
+            r->done();
+        });
+    };
+    // image://att/avatar/<thread id>?v=<photo version>: a person's or group's profile photo.
+    if (id.startsWith(QLatin1String("avatar/"))) {
+        const QString tid = id.section('?', 0, 0).mid(7);
+        const QString version = id.section("v=", 1).section('&', 0, 0);
+        QMetaObject::invokeMethod(Hub::instance(), [r, tid, version, decode] {
+            Hub::instance()->fetchAvatar(tid, version, [r, decode](const QString &path, const QString &err) {
+                if (!err.isEmpty()) {
+                    r->error = err;
+                    r->done();
+                    return;
+                }
+                decode(path);
+            });
+        }, Qt::QueuedConnection);
+        return r;
+    }
     const qint64 att = id.section('?', 0, 0).toLongLong();
     const bool retry = id.contains("retry=");
-    QThreadPool *pool = &m_pool;
     // Ask the hub for the smallest resized copy that covers the size on screen (older hubs ignore it).
     const int want = requested.width() > 0 ? requested.width() : 1280;
     const int width = want <= 320 ? 320 : want <= 640 ? 640 : 1280;
-    QMetaObject::invokeMethod(Hub::instance(), [r, att, width, retry, requested, pool] {
-        Hub::instance()->fetchAttachment(att, width, retry, [r, requested, pool](const QString &path, const QString &err) {
+    QMetaObject::invokeMethod(Hub::instance(), [r, att, width, retry, decode] {
+        Hub::instance()->fetchAttachment(att, width, retry, [r, decode](const QString &path, const QString &err) {
             if (!err.isEmpty()) {
                 r->error = err;
                 r->done();
                 return;
             }
-            pool->start([r, path, requested] {
-                QImageReader reader(path);
-                // Cached files have no extension: name the format from the content, so Qt doesn't try every plugin.
-                static const QMimeDatabase mimes;
-                const QList<QByteArray> formats = QImageReader::imageFormatsForMimeType(mimes.mimeTypeForFile(path, QMimeDatabase::MatchContent).name().toLatin1());
-                if (!formats.isEmpty()) reader.setFormat(formats.first());
-                reader.setAutoTransform(true);
-                QSize size = reader.size();
-                if (size.isValid() && requested.isValid() && (requested.width() > 0 || requested.height() > 0)) {
-                    QSize box(requested.width() > 0 ? requested.width() : INT_MAX, requested.height() > 0 ? requested.height() : INT_MAX);
-                    if (reader.transformation() & QImageIOHandler::TransformationRotate90) size.transpose();
-                    if (size.width() > box.width() || size.height() > box.height()) {
-                        QSize scaled = size.scaled(box, Qt::KeepAspectRatio);
-                        if (reader.transformation() & QImageIOHandler::TransformationRotate90) scaled.transpose();
-                        reader.setScaledSize(scaled);
-                    }
-                }
-                r->image = reader.read();
-                if (r->image.isNull()) r->error = reader.errorString();
-                r->done();
-            });
+            decode(path);
         });
     }, Qt::QueuedConnection);
     return r;

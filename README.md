@@ -8,6 +8,10 @@ Self-hosted web app that syncs iMessage, SMS and WhatsApp from my iPhone into on
 - **`apps/web`** is the React PWA: inbox, merged conversations, search, attachments, replies, WhatsApp pairing.
 - **`apps/desktop`** is a native Linux client (C++ / Qt Quick) in the MacShell style, with notifications and a small background footprint. See [its README](apps/desktop/README.md).
 
+## Profile photos
+
+Threads show real photos in the web app and the desktop app, with initials as the fallback. A group shows its own icon. A person shows their iMessage contact photo (from the Mac's Contacts, via BlueBubbles) when they have one, and otherwise their WhatsApp profile photo. Photos are stored in Postgres (the `avatar` table, 256px WebP) and served only to signed-in clients at `/api/avatars/<thread id>?w=64|128|256&v=<version>`. The thread list carries the version (`avatar`), so a changed photo gets a new URL. Contacts are re-read hourly, iMessage group icons and WhatsApp photos are re-checked daily (WhatsApp also on photo-change events).
+
 ## Search
 
 The search box in the sidebar (Ctrl+K) finds people and messages. Every word has to appear and words match as prefixes, so `pizz` finds "pizza". Put words in quotes to find them together (`"see you"`) and put a minus in front of a word to leave it out (`dinner -work`). The iMessage and WhatsApp filters also narrow the message results. Click a result to open the conversation at that message. Inside a conversation, **Search** in the header searches just that conversation.

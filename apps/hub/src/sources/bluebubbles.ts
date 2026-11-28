@@ -4,7 +4,9 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { createHash } from 'node:crypto';
 import { io, type Socket } from 'socket.io-client';
+import { RECHECK_MS, saveAvatar, touchAvatar } from '../avatars.js';
 import { config } from '../config.js';
 import { kvGet, kvSet, q, q1 } from '../db.js';
 import {
@@ -176,6 +178,14 @@ export class BlueBubbles {
       if (d?.read) setConversationRead('apple', d.chatGuid).catch(() => {});
     });
     this.socket.on('group-name-change', (m: BBMessage) => onMsg(m));
+    // A group's photo was changed or removed: look at it again right away.
+    const onIcon = async (m: BBMessage) => {
+      const guid = m?.chats?.[0]?.guid;
+      const conv = guid ? await q1<{ id: number }>(`select id from conversation where network = 'apple' and source_id = $1`, [guid]) : undefined;
+      if (conv && guid) await this.refreshGroupIcon(conv.id, guid);
+    };
+    this.socket.on('group-icon-changed', (m: BBMessage) => onIcon(m).catch(() => {}));
+    this.socket.on('group-icon-removed', (m: BBMessage) => onIcon(m).catch(() => {}));
     this.socket.on('participant-added', (m: BBMessage) => onMsg(m));
     this.socket.on('participant-removed', (m: BBMessage) => onMsg(m));
     this.socket.on('participant-left', (m: BBMessage) => onMsg(m));
@@ -192,6 +202,7 @@ export class BlueBubbles {
       this.status.error = null;
       await this.syncContacts();
       await this.syncChats();
+      await this.syncGroupIcons().catch((e) => this.log.warn({ err: String(e) }, 'group icon sync failed'));
       await this.syncMessages();
       this.status.lastSyncAt = new Date().toISOString();
       emitLive({ type: 'status', source: 'bluebubbles' });
@@ -200,10 +211,14 @@ export class BlueBubbles {
     }
   }
 
+  /** Contact photos are large, so they're fetched at most once an hour; names are refreshed on every sync. */
+  private lastPhotoSync = 0;
+
   private async syncContacts() {
     let contacts: any[] = [];
+    const withPhotos = Date.now() - this.lastPhotoSync > 3600_000;
     try {
-      contacts = (await this.api('/contact')).data ?? [];
+      contacts = (await this.api('/contact', withPhotos ? { query: { extraProperties: 'avatar' } } : {})).data ?? [];
     } catch (e) {
       this.log.warn({ err: String(e) }, 'could not load Mac contacts (grant BlueBubbles Contacts access)');
       return;
@@ -212,9 +227,54 @@ export class BlueBubbles {
       const name = c.displayName || [c.firstName, c.lastName].filter(Boolean).join(' ') || null;
       if (!name) continue;
       const addresses = [...(c.phoneNumbers ?? []), ...(c.emails ?? [])].map((x: any) => x?.address).filter(Boolean);
+      const photo: string | null = withPhotos && typeof c.avatar === 'string' && c.avatar ? c.avatar : null;
+      const photoKey = photo ? createHash('sha1').update(photo).digest('hex') : null;
       for (const raw of addresses) {
-        await upsertHandle('apple', { address: normalizeAddress(raw) ?? raw, displayName: name, nameSource: 'contacts' });
+        const handleId = await upsertHandle('apple', { address: normalizeAddress(raw) ?? raw, displayName: name, nameSource: 'contacts' });
+        if (withPhotos) await this.saveContactPhoto(handleId, photo, photoKey);
       }
+    }
+    if (withPhotos) this.lastPhotoSync = Date.now();
+  }
+
+  /** Stores (or clears) a contact's photo for one of their addresses, skipping the work when it hasn't changed. */
+  private async saveContactPhoto(handleId: number, base64: string | null, key: string | null) {
+    const have = await q1<{ source_key: string | null }>('select source_key from avatar where handle_id = $1', [handleId]);
+    if (have && (have.source_key ?? null) === key) return;
+    if (!have && !base64) return; // never had one, still none
+    await saveAvatar({ handleId }, base64 ? Buffer.from(base64, 'base64') : null, key).catch((e) =>
+      this.log.warn({ err: String(e), handleId }, 'could not save contact photo'),
+    );
+  }
+
+  /**
+   * Group photos: asks the Mac for each iMessage group's icon about once a day (newest chats first, a few per pass so
+   * Messages stays responsive), and right away when BlueBubbles reports a change.
+   */
+  private async syncGroupIcons(limit = 15) {
+    const due = await q<{ id: number; source_id: string }>(
+      `select c.id, c.source_id from conversation c left join avatar a on a.conversation_id = c.id
+       where c.network = 'apple' and c.is_group and c.last_message_at is not null
+         and (a.id is null or a.checked_at < now() - ($1 || ' milliseconds')::interval)
+       order by (a.id is null) desc, c.last_message_at desc limit $2`,
+      [String(RECHECK_MS), limit],
+    );
+    for (const c of due) await this.refreshGroupIcon(c.id, c.source_id);
+  }
+
+  private async refreshGroupIcon(conversationId: number, guid: string) {
+    const target = { conversationId };
+    try {
+      const res = await fetch(this.url(`/chat/${encodeURIComponent(guid)}/icon`), { signal: AbortSignal.timeout(60_000) });
+      if (res.status === 404) return void (await saveAvatar(target, null, null));
+      if (!res.ok) return; // try again on a later pass
+      const bytes = Buffer.from(await res.arrayBuffer());
+      const key = createHash('sha1').update(bytes).digest('hex');
+      const have = await q1<{ source_key: string | null }>('select source_key from avatar where conversation_id = $1', [conversationId]);
+      if (have?.source_key === key) await touchAvatar(target);
+      else await saveAvatar(target, bytes, key);
+    } catch (e) {
+      this.log.warn({ err: String(e), conversationId }, 'could not fetch group icon');
     }
   }
 

@@ -139,8 +139,8 @@ Hub *Hub::create(QQmlEngine *, QJSEngine *) {
 }
 
 Hub::Hub()
-    : m_threadModel({"tid", "title", "initials", "time", "preview", "unread", "service", "isGroup", "muted"}, "tid"),
-      m_resultModel({"key", "tid", "title", "initials", "time", "preview", "unread", "service", "isGroup", "muted"}, "key"),
+    : m_threadModel({"tid", "title", "initials", "photo", "time", "preview", "unread", "service", "isGroup", "muted"}, "tid"),
+      m_resultModel({"key", "tid", "title", "initials", "photo", "time", "preview", "unread", "service", "isGroup", "muted"}, "key"),
       m_messageModel({"key", "id", "fromMe", "kind", "html", "body", "jumbo", "time", "service", "senderName", "showName",
                       "separator", "tail", "statusText", "failed", "pending", "attachments", "reactions", "replyName",
                       "replyBody", "unsent", "edited"},
@@ -384,6 +384,7 @@ void Hub::loadThreads() {
 QVariantMap Hub::decorateThread(QVariantMap t) const {
     const QString title = t.value("title").toString();
     t["initials"] = initialsOf(title);
+    t["photo"] = t.value("avatar").toString();  // version of the profile photo; empty when there is none
     t["time"] = listTime(parseTime(t.value("last_at")));
     t["isGroup"] = t.value("is_group").toBool();
     t["muted"] = t.value("muted").toBool();  // muted on the phone: no notifications
@@ -476,7 +477,7 @@ void Hub::search(const QString &q) {
             rows << QVariantMap{{"key", "r" + m.value("id").toString()},
                                 {"tid", m.value("tid")},
                                 {"title", m.value("thread_title").toString().isEmpty() ? who : m.value("thread_title")},
-                                {"initials", QString()}, {"unread", 0}, {"service", QString()}, {"isGroup", false}, {"muted", false},
+                                {"initials", QString()}, {"photo", QString()}, {"unread", 0}, {"service", QString()}, {"isGroup", false}, {"muted", false},
                                 {"time", listTime(parseTime(m.value("sent_at")))},
                                 {"preview", (who.isEmpty() ? QString() : who.section(' ', 0, 0) + ": ") + oneLine(m.value("body").toString())}};
         }
@@ -944,6 +945,38 @@ void Hub::fetchAttachment(qint64 id, int width, bool retry, std::function<void(Q
             if (status == 401 && signedIn()) signedOut();
         }
         const auto callbacks = m_fetching.take(name);
+        for (const auto &cb : callbacks) cb(err.isEmpty() ? path : QString(), err);
+    });
+}
+
+void Hub::fetchAvatar(const QString &tid, const QString &version, std::function<void(QString, QString)> done) {
+    // The version is part of the file name: a changed photo is simply a new file, and old ones are never read again.
+    const QString name = tid + '-' + version;
+    const QString path = cacheFile("av/" + name);
+    if (QFileInfo::exists(path)) {
+        done(path, {});
+        return;
+    }
+    auto it = m_fetching.find("av:" + name);
+    if (it != m_fetching.end()) {
+        it->append(std::move(done));
+        return;
+    }
+    m_fetching.insert("av:" + name, {std::move(done)});
+    QNetworkReply *reply = m_nam.get(request("/api/avatars/" + tid + "?w=128&v=" + version));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, path, name] {
+        reply->deleteLater();
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        QString err;
+        if (status == 200) {
+            QDir().mkpath(QFileInfo(path).absolutePath());
+            QSaveFile f(path);
+            if (!f.open(QIODevice::WriteOnly) || f.write(reply->readAll()) < 0 || !f.commit()) err = QStringLiteral("Could not save the photo");
+        } else {
+            err = status ? QStringLiteral("No photo (%1)").arg(status) : reply->errorString();
+            if (status == 401 && signedIn()) signedOut();
+        }
+        const auto callbacks = m_fetching.take("av:" + name);
         for (const auto &cb : callbacks) cb(err.isEmpty() ? path : QString(), err);
     });
 }

@@ -1,7 +1,8 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, SERVICE_LABEL, type MessagePage, type ThreadSummary } from '../api.ts';
-import { initials, listTime, serviceClass } from '../format.ts';
+import { listTime, serviceClass } from '../format.ts';
+import { Avatar } from './Avatar.tsx';
 import { Highlight } from './Highlight.tsx';
 
 type Filter = 'all' | 'unread' | 'apple' | 'whatsapp';
@@ -145,7 +146,7 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
             onFocus={() => prefetch(t.tid)}
             aria-current={t.tid === activeTid ? 'page' : undefined}
           >
-            <span className={`avatar ${t.is_group ? 'group' : ''}`} aria-hidden="true">{initials(t.title)}</span>
+            <Avatar tid={t.tid} title={t.title} isGroup={t.is_group} version={t.avatar} />
             <span className="thread-main">
               <span className="thread-top">
                 <span className="thread-title">{t.title}</span>

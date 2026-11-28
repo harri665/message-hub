@@ -18,11 +18,14 @@ export interface ThreadSummary {
   last_sender_name: string | null;
   muted: boolean;
   muted_until: string | null;
+  /** Version of the profile photo (see /api/avatars/:tid), or null when there is none. */
+  avatar: string | null;
 }
 
 export interface ThreadDetail {
   tid: string;
   isGroup: boolean;
+  avatar: string | null;
   muted: boolean;
   title: string;
   conversations: { id: number; network: Network; title: string | null; lastMessageAt: string | null; unread: number; lastService: Service }[];

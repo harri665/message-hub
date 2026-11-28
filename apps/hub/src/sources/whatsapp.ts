@@ -1,6 +1,7 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import pg from 'pg';
+import { expireAvatar, RECHECK_MS, saveAvatar, touchAvatar } from '../avatars.js';
 import { config } from '../config.js';
 import { q, q1 } from '../db.js';
 import {
@@ -21,6 +22,7 @@ type WAEvent =
   | { type: 'receipt'; chat: string; ids: string[]; kind: 'delivered' | 'read' | 'read-self'; timestamp: number }
   | { type: 'contact'; address: string; name: string; source: NameSource }
   | { type: 'chat'; chat: string; name: string; isGroup: boolean }
+  | { type: 'picture'; address: string; chat: string }
   | { type: 'status' };
 
 export interface WAStatus {
@@ -62,6 +64,66 @@ export class WhatsApp {
     setInterval(() => this.kick(), 30_000).unref();
     this.syncMutes().catch((e) => this.log.warn({ err: String(e) }, 'WhatsApp mute sync failed'));
     setInterval(() => this.syncMutes().catch((e) => this.log.warn({ err: String(e) }, 'WhatsApp mute sync failed')), 60_000).unref();
+    setTimeout(() => this.syncAvatars(), 30_000).unref();
+    setInterval(() => this.syncAvatars(), 5 * 60_000).unref();
+  }
+
+  private avatarsRunning = false;
+
+  /**
+   * Profile photos of WhatsApp contacts (people you have a 1:1 chat with) and groups. Each pass handles a few that
+   * have never been fetched or were last checked over a day ago, newest chats first, one per second so WhatsApp
+   * isn't hammered. The connector answers "unchanged" for a photo we already have, so re-checks are cheap. A photo
+   * change on the account (a `picture` event) makes that one due immediately.
+   */
+  async syncAvatars(limit = 25) {
+    if (this.avatarsRunning || !this.configured) return;
+    this.avatarsRunning = true;
+    try {
+      const due = await q<{ kind: 'h' | 'c'; id: number; jid: string; source_key: string | null }>(
+        `select kind, id, jid, source_key from (
+           select * from (
+             select distinct on (h.id) 'h' as kind, h.id, h.address as jid, a.source_key, a.id as aid, c.last_message_at
+             from handle h
+             join conversation_member cm on cm.handle_id = h.id
+             join conversation c on c.id = cm.conversation_id and not c.is_group and c.network = 'whatsapp'
+             left join avatar a on a.handle_id = h.id
+             where h.network = 'whatsapp' and h.address not like 'lid:%'
+               and (a.id is null or a.checked_at < now() - ($1 || ' milliseconds')::interval)
+             order by h.id, c.last_message_at desc nulls last
+           ) people
+           union all
+           select 'c', c.id, c.source_id, a.source_key, a.id, c.last_message_at
+           from conversation c left join avatar a on a.conversation_id = c.id
+           where c.network = 'whatsapp' and c.is_group and c.source_id like '%@g.us' and c.last_message_at is not null
+             and (a.id is null or a.checked_at < now() - ($1 || ' milliseconds')::interval)
+         ) due
+         order by (aid is null) desc, last_message_at desc nulls last
+         limit $2`,
+        [String(RECHECK_MS), limit],
+      );
+      let changed = 0;
+      for (const d of due) {
+        const target = d.kind === 'h' ? { handleId: d.id } : { conversationId: d.id };
+        const res = await fetch(`${config.whatsapp.url}/avatar?jid=${encodeURIComponent(d.jid)}${d.source_key ? `&have=${encodeURIComponent(d.source_key)}` : ''}`, {
+          headers: { 'x-internal-secret': config.whatsapp.secret },
+          signal: AbortSignal.timeout(60_000),
+        }).catch(() => null);
+        if (!res || res.status === 503 || res.status === 502) break; // offline or rate limited: try again next pass
+        if (res.status === 304) await touchAvatar(target);
+        else if (res.status === 404) { if (await saveAvatar(target, null, null)) changed++; }
+        else if (res.ok) {
+          const ok = await saveAvatar(target, Buffer.from(await res.arrayBuffer()), res.headers.get('x-picture-id'));
+          if (ok) changed++;
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      if (due.length) this.log.info({ checked: due.length, changed }, 'WhatsApp profile photos checked');
+    } catch (e) {
+      this.log.warn({ err: String(e) }, 'WhatsApp profile photo sync failed');
+    } finally {
+      this.avatarsRunning = false;
+    }
   }
 
   /**
@@ -193,6 +255,15 @@ export class WhatsApp {
       case 'chat':
         await upsertConversation('whatsapp', { sourceId: ev.chat, title: ev.name, isGroup: ev.isGroup });
         break;
+      case 'picture': {
+        // Someone changed or removed their photo: make it due, and pick it up on the next pass (soon).
+        const h = ev.address ? await q1<{ id: number }>(`select id from handle where network = 'whatsapp' and address = $1`, [ev.address]) : undefined;
+        if (h) await expireAvatar({ handleId: h.id });
+        const c = await q1<{ id: number }>(`select id from conversation where network = 'whatsapp' and source_id = $1`, [ev.chat]);
+        if (c) await expireAvatar({ conversationId: c.id });
+        setTimeout(() => this.syncAvatars(), 5000).unref();
+        break;
+      }
       case 'status':
         emitLive({ type: 'status', source: 'whatsapp' });
         break;

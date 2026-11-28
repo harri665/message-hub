@@ -10,6 +10,7 @@ import type { BlueBubbles } from '../sources/bluebubbles.js';
 import type { WhatsApp } from '../sources/whatsapp.js';
 import { bus, emitLive, type LiveEvent } from '../store.js';
 import { cached } from '../cache.js';
+import { AVATAR_SIZES, resizedAvatar, THREAD_AVATAR_SQL, threadAvatar } from '../avatars.js';
 import { approveSendRequest, listSendRequests, rejectSendRequest, sendText } from '../outbox.js';
 import { listThreads, searchMessages, threadConversations, threadMessages, type SearchFilter } from '../queries.js';
 
@@ -158,9 +159,11 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
         [convs.map((c) => c.id)],
       );
       const svc = new Map(lastServices.map((r) => [r.conversation_id, r.service]));
+      const avatar = (await q1<{ v: string | null }>(`select ${THREAD_AVATAR_SQL('$1::bigint', '$2::bigint')} as v`, [personId, convs[0].id]))?.v ?? null;
       return {
         tid: tid,
         isGroup,
+        avatar,
         muted: convs.every((c) => !!c.muted_until && new Date(c.muted_until) > new Date()),
         title: convs[0].title ?? name ?? members.map((m) => m.name ?? m.address).join(', '),
         conversations: convs.map((c) => ({
@@ -270,6 +273,21 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
         text, tid: tid || undefined, service: (service || undefined) as SearchFilter['service'],
         limit: Number(limit ?? 50), offset: Number(offset ?? 0),
       });
+    });
+
+    // ---------- profile photos ----------
+    // /api/avatars/p12?w=64&v=<version>: the photo shown for a person or group thread (see avatars.ts for which one wins).
+    // The version in the thread list changes when the photo does, so a versioned URL can be cached forever.
+    r.get<{ Params: { tid: string }; Querystring: { w?: string; v?: string } }>('/api/avatars/:tid', async (req, reply) => {
+      const av = await threadAvatar(req.params.tid);
+      if (!av) return reply.code(404).send({ error: 'no photo' });
+      const width = AVATAR_SIZES.has(Number(req.query.w)) ? Number(req.query.w) : 256;
+      const etag = `"${av.etag}-${width}"`;
+      reply.header('etag', etag);
+      reply.header('x-content-type-options', 'nosniff');
+      reply.header('cache-control', req.query.v === av.etag ? 'private, max-age=31536000, immutable' : 'private, max-age=0, must-revalidate');
+      if (req.headers['if-none-match'] === etag) return reply.code(304).send();
+      return reply.type('image/webp').send(await resizedAvatar(av.etag, av.data, width));
     });
 
     // ---------- attachments ----------

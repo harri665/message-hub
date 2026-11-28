@@ -8,6 +8,7 @@ Item {
     required property string time
     required property string preview
     required property string initials
+    required property string photo  // version of the profile photo, empty when there is none
     required property int unread
     required property string service
     required property bool isGroup
@@ -42,6 +43,7 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         size: 42
         initials: row.initials
+        photo: row.photo.length ? "image://att/avatar/" + row.tid + "?v=" + row.photo : ""
         visible: row.initials.length > 0
     }
     Text {

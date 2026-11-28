@@ -88,6 +88,8 @@ public:
 
     // For the image provider: calls back on the main thread with a local file path (or an error).
     // width 0 = the original; otherwise the hub's resized copy (320, 640 or 1280 px wide).
+    // A thread's profile photo (version = the hub's photo version, so a changed photo is a new cache entry).
+    void fetchAvatar(const QString &tid, const QString &version, std::function<void(QString path, QString error)> done);
     void fetchAttachment(qint64 id, int width, bool retry, std::function<void(QString path, QString error)> done);
 
     // Called when the window goes away: drop the per-thread state so the process idles small.

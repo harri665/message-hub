@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -221,6 +222,9 @@ func (a *App) handleEvent(raw any) {
 		if evt.Name != nil {
 			a.emit(ctx, map[string]any{"type": "chat", "chat": evt.JID.String(), "name": evt.Name.Name, "isGroup": true})
 		}
+	case *events.Picture:
+		// A contact or group changed (or removed) its photo: tell the hub to fetch it again.
+		a.emit(ctx, map[string]any{"type": "picture", "address": a.address(ctx, evt.JID, types.EmptyJID), "chat": evt.JID.String()})
 	case *events.Connected:
 		a.log.Infof("connected to WhatsApp")
 		a.emit(ctx, map[string]any{"type": "status"})
@@ -517,6 +521,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /read", a.auth(a.handleRead))
 	mux.HandleFunc("POST /mute", a.auth(a.handleMute))
 	mux.HandleFunc("GET /media", a.auth(a.handleMedia))
+	mux.HandleFunc("GET /avatar", a.auth(a.handleAvatar))
 	return mux
 }
 
@@ -829,5 +834,56 @@ func (a *App) handleMedia(w http.ResponseWriter, r *http.Request) {
 		mime = http.DetectContentType(data)
 	}
 	w.Header().Set("Content-Type", mime)
+	_, _ = w.Write(data)
+}
+
+// handleAvatar returns the current profile photo of a contact (jid is a hub address like "+15551234567") or a group
+// (jid like "123@g.us"). The photo's id comes back in X-Picture-Id; when have= matches the current id the answer is
+// 304 with no body, and 404 means no photo (or one hidden from us).
+func (a *App) handleAvatar(w http.ResponseWriter, r *http.Request) {
+	jid, err := jidFromAddress(r.URL.Query().Get("jid"))
+	if err != nil || jid.IsEmpty() {
+		writeErr(w, http.StatusBadRequest, errors.New("jid is required"))
+		return
+	}
+	if !a.cli.IsConnected() {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("not connected"))
+		return
+	}
+	info, err := a.cli.GetProfilePictureInfo(r.Context(), jid.ToNonAD(), &whatsmeow.GetProfilePictureParams{ExistingID: r.URL.Query().Get("have")})
+	switch {
+	case errors.Is(err, whatsmeow.ErrProfilePictureNotSet), errors.Is(err, whatsmeow.ErrProfilePictureUnauthorized):
+		writeErr(w, http.StatusNotFound, errors.New("no profile picture"))
+		return
+	case err != nil:
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	case info == nil:
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	u, err := url.Parse(info.URL)
+	if err != nil || u.Scheme != "https" {
+		writeErr(w, http.StatusBadGateway, errors.New("unexpected picture URL"))
+		return
+	}
+	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, info.URL, nil)
+	res, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("picture download: %s", res.Status))
+		return
+	}
+	data, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	w.Header().Set("X-Picture-Id", info.ID)
+	w.Header().Set("Content-Type", http.DetectContentType(data))
 	_, _ = w.Write(data)
 }

@@ -1,5 +1,6 @@
 // Read queries shared by the web API and the MCP server.
 import { cached } from './cache.js';
+import { THREAD_AVATAR_SQL } from './avatars.js';
 import { q, q1 } from './db.js';
 
 export interface ConvRow {
@@ -126,6 +127,7 @@ const THREADS_SQL = `
            limit $1 offset $2
          )
     select p.tid, p.is_group, p.last_at, p.unread, p.conversation_ids, p.networks, p.title, p.muted, p.muted_until,
+           ${THREAD_AVATAR_SQL('p.person_id', 'p.conversation_ids[1]')} as avatar,
            lm.body as last_body, lm.from_me as last_from_me, lm.service as last_service, lm.kind as last_kind,
            lm.unsent as last_unsent, lm.has_attachment as last_has_attachment, lm.sender_name as last_sender_name
     from page p

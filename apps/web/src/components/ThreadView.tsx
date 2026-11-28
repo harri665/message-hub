@@ -1,7 +1,8 @@
 import { Fragment, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, SERVICE_LABEL, type Message, type MessagePage, type Service } from '../api.ts';
-import { dayLabel, initials, listTime, sameDay, serviceClass } from '../format.ts';
+import { dayLabel, listTime, sameDay, serviceClass } from '../format.ts';
+import { Avatar } from './Avatar.tsx';
 import { Highlight } from './Highlight.tsx';
 import { MessageBubble } from './MessageBubble.tsx';
 import { Composer } from './Composer.tsx';
@@ -190,7 +191,7 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
 
       <header className="thread-head glass">
         <button className="pill-btn back" onClick={onBack}>Back</button>
-        <span className={`avatar small ${t?.isGroup ? 'group' : ''}`} aria-hidden="true">{initials(t?.title ?? '')}</span>
+        <Avatar tid={tid} title={t?.title ?? ''} isGroup={!!t?.isGroup} version={t?.avatar} small />
         <div className="thread-head-main">
           <h2>{t?.title ?? ''}</h2>
           <p className="thread-head-sub">
