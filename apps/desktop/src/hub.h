@@ -117,6 +117,13 @@ public:
     Q_INVOKABLE QString linkHtml(const QString &text) const;
     Q_INVOKABLE void clearError() { setError({}); }
 
+    // ---- new conversations (compose.cpp) ----
+    // Contact suggestions for a name, number or email; which services reach one address; and the first message of a new
+    // conversation (on success the new chat is opened and the inbox refreshed). Answers come back as the signals below.
+    Q_INVOKABLE void searchContacts(const QString &q);
+    Q_INVOKABLE void checkAddress(const QString &address);
+    Q_INVOKABLE void compose(const QStringList &addresses, const QString &service, const QString &text);
+
     // ---- for MacShell's Dynamic Island (see App::addIslandClient) ----
     // Send to any chat, open or not; the outcome comes back through sendResult().
     void sendTo(const QString &tid, const QString &text);
@@ -159,6 +166,10 @@ signals:
     void linkPreviewReady(qint64 messageId);
     void hubTimeZoneChanged();
     void scheduleResult(bool ok, const QString &error);
+    // ---- new conversations (compose.cpp) ----
+    void contactsReady(const QString &query, const QVariantList &matches);
+    void addressChecked(const QString &address, const QVariantMap &services);  // empty map: couldn't be checked
+    void composeResult(bool ok, const QString &tid, const QString &error);
 
 private:
     Hub();
