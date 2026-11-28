@@ -32,9 +32,15 @@ Everything else is searched as words, and the words can be left out (`has: image
 
 In the composer (web and desktop), typing `:` and two letters (`:smi`) opens a list of matching emoji above the cursor. Arrow keys pick, Enter or Tab inserts, Esc closes, and a finished `:smile:` turns into the emoji straight away. It only starts at the beginning of the text or after a space, so `http://x:80` is left alone, and it does nothing inside backticks. The names are the ones GitHub, Discord and Slack use. The list comes from [emojibase-data](https://github.com/milesj/emojibase) (MIT, notice in `apps/web/src/emoji/LICENSE-emojibase.txt`), regenerated with `node tools/gen-emoji.mjs <path to node_modules/emojibase-data>` into both apps.
 
-## Pinned messages
+## Pinned chats
 
-Right-click (desktop) or use **Pin** on a message (web) to pin it. Pins are private to the hub: nothing is sent to the phone, iMessage or WhatsApp, and other people never see them (iOS 26 message pins never reach the Mac VM, and pinning in WhatsApp would post a notice to the chat, so the hub keeps its own). A pin is a `pinned_at` timestamp on the message (migration 006). `POST /api/messages/:id/pin` and `/unpin` set it (signed-in sessions only) and send a live `message-updated` event, so other open clients update. `GET /api/threads/:tid` lists the thread's `pins`, newest pin first (`id`, `text` preview, `sender`, `sentAt`, `fromMe`, `hasAttachment`). Unsent messages drop out of the pins. A thread with pins shows a Pinned bar under the header: click it to step through the pins (older pages are loaded if needed, and the message is highlighted), or Unpin from it. Claude's `read_conversation` marks pinned messages with "(pinned)" and cannot change pins.
+Right-click a chat in the list (web and desktop; press and hold on a touch screen) and choose **Pin** to keep it at the top of the list, or **Unpin**. Pinned chats come first in the order they were pinned, with a pin mark and a line under the last one. Pins are private to the hub: nothing is sent to the phone, iMessage or WhatsApp (the Mac's iMessage pins can't be read, so the hub keeps its own). A pin is a `pinned_at` timestamp on each chat of the thread (migration 011); a thread is pinned while any of its chats is, so a new WhatsApp chat with a pinned person doesn't unpin them. `POST /api/threads/:tid/pin` and `/unpin` set it and send a live `conversation-updated` event. `GET /api/threads` (the apps' inbox) lists pinned threads first and gives each thread's `pinned_at`; `GET /api/threads/:tid` gives `pinned`. Archiving a chat unpins it. Claude's tools list conversations newest first, pins or not.
+
+Pinning single messages (1.2 and 1.3) is gone; migration 011 clears `message.pinned_at`, and the column stays only so an older hub can still start.
+
+## The message menu
+
+Right-click a message, or press and hold it on a touch screen, for a menu with the reactions its service can send (iMessage's six tapbacks, or a row of WhatsApp emoji; choosing your current one again takes it away), **Reply** and **Copy** (and, in the desktop app, its attachments; in the web app **Copy Link** when you held a link). The **React** and **Reply** buttons beside a message under the pointer stay.
 
 ## Scheduled messages
 

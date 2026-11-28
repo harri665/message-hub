@@ -57,16 +57,31 @@ New features go into the shared code; something that can only exist on one syste
   showing meanwhile). Esc or a click on the dim area closes it; **Left**/**Right** (or the arrows) step through the chat's
   other photos; the wheel or a pinch zooms, dragging pans, double-click toggles fit and 100%; the top bar has *Open in
   default app*, *Save As* (the system's save dialog) and *Copy image*. Videos and other files open in the system's app.
-- Sending text and files (the **+** button opens the desktop's file picker; you can also drop files into a chat),
-  choosing the service when a person has more than one chat, replying (right-click a message).
+- **New conversations**: the **+** beside the gear (or **Ctrl+N**) opens New Message: pick people from your contacts or
+  type numbers and emails, choose iMessage, SMS or WhatsApp (the hub checks which ones can reach them), and send the
+  first message. If you already have a chat with that person, it offers to open it.
+- Sending text and files, choosing the service when a person has more than one chat. Files from the **+** button
+  (the desktop's file picker), dropped on a chat, or pasted with **Ctrl+V** (a copied picture or copied files) wait in
+  the message box with previews until you press Send; the text goes with the last one as its caption.
+- **Voice messages**: with the box empty, the microphone button records (Esc or Cancel throws it away, the arrow sends
+  it). The hub turns the recording into an iMessage audio message or a WhatsApp voice note. Windows records with the
+  system's default microphone (it must be allowed for desktop apps under *Privacy & security > Microphone*); Linux uses
+  `pw-record`, `parecord` or `arecord`, whichever is installed.
+- **Message menu**: right-click a message for its reactions (iMessage's tapbacks or a row of WhatsApp emoji; choosing
+  yours again takes it away), Reply, Copy and its attachments. **React** and **Reply** also show beside the message
+  under the pointer.
+- **Typing**: three dots at the bottom of the chat while someone types (with their name in groups, or *recording
+  audio*), and *typing...* in the list. The app sends your own typing indicator too, and while its window is in front
+  WhatsApp shows you online, as the web app does.
+- **Drafts**: text you haven't sent stays in each chat's box when you switch chats or quit, and the list shows it as
+  *Draft:*.
 - Live updates over the hub's WebSocket and desktop notifications for new messages. Clicking one opens the chat.
-- **Muted chats stay quiet**: chats the hub marks as muted (WhatsApp chats muted on the phone, or chats muted in the
-  web app) show a crossed-out bell and a grey unread dot, send no notifications, don't pop up in the Dynamic Island,
+- **Muted chats stay quiet**: right-click a chat to mute it for 8 hours, a week or always (or to unmute it). Muted chats
+  (also WhatsApp chats muted on the phone, or chats muted in the web app) show a crossed-out bell and a grey unread dot, send no notifications, don't pop up in the Dynamic Island,
   and don't add to the unread count.
-- **Pinned messages**: right-click a message and choose Pin (or Unpin). Pinned messages get a small pin, and the chat
-  shows a Pinned bar under its title; click the bar to step through the pins (it scrolls to each, loading older
-  messages if needed) or choose Unpin. Pins live only in the hub, so every app sees them and nothing is sent to the
-  phone or to WhatsApp.
+- **Pinned chats**: right-click a chat and choose Pin (or Unpin). Pinned chats stay at the top of the list in the order
+  you pinned them, with a small pin and a line under the last one, whatever arrives in other chats. Pins live in the
+  hub, so the web app shows the same ones, and nothing is sent to the phone or to WhatsApp. Archiving a chat unpins it.
 - **Archived chats**: right-click a chat and choose Archive. An Archived row at the top of the list (with its count)
   opens the archived chats, with a back arrow to return; right-click there to Unarchive. Archived chats don't add to the
   unread count, send no notifications and don't show in the Dynamic Island, and a new message does not bring a chat
@@ -193,6 +208,9 @@ To keep notifications coming after login, start it in the background with your s
 |---|---|
 | Ctrl+F / Ctrl+K | Search conversations and messages |
 | Alt+Up / Alt+Down, Ctrl+Tab | Previous / next conversation |
+| Ctrl+N | New message |
+| Ctrl+V | Paste text, or a copied picture or files to send |
+| Esc | Close the emoji list, cancel a reply or a recording |
 | Enter / Shift+Enter | Send / new line |
 | Ctrl+R | Refresh |
 | Ctrl+W | Close the window (keeps running for notifications) |
