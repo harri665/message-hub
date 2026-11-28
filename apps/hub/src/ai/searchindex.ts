@@ -188,18 +188,33 @@ async function embedStale(deadline: number, log: FastifyBaseLogger) {
         else toEmbed.push({ id: c.id, text, hash });
       }
       if (!toEmbed.length) continue;
-      let vectors: number[][];
-      try {
-        vectors = await embed(toEmbed.map((c) => c.text.slice(0, 8000)), recent ? 'search-index' : 'search-backlog', priority);
-      } catch (e) {
-        if (!(e instanceof AiError && (e.kind === 'budget' || e.kind === 'off'))) log.warn({ err: String(e) }, 'search indexing failed');
-        return;
-      }
-      for (const [i, c] of toEmbed.entries()) {
-        await q(
+      const feature = recent ? 'search-index' : 'search-backlog';
+      const save = (c: (typeof toEmbed)[number], vector: number[] | null) =>
+        q(
           'update search_chunk set text = $2, text_hash = $3, embedding = $4::vector, model = $5, stale = false where id = $1',
-          [c.id, c.text, c.hash, vectorLiteral(vectors[i]), config.ai.models.embed],
+          [c.id, c.text, c.hash, vector ? vectorLiteral(vector) : null, vector ? config.ai.models.embed : null],
         );
+      try {
+        const vectors = await embed(toEmbed.map((c) => c.text.slice(0, 8000)), feature, priority);
+        for (const [i, c] of toEmbed.entries()) await save(c, vectors[i]);
+      } catch (e) {
+        const stop = e instanceof AiError && (e.kind === 'budget' || e.kind === 'off' || e.kind === 'busy');
+        if (!(e instanceof AiError && (e.kind === 'budget' || e.kind === 'off'))) log.warn({ err: String(e) }, 'search indexing failed');
+        if (stop || toEmbed.length === 1) {
+          // A single stretch Cloudflare refuses is set aside (not stale, no embedding) so it can't block the rest.
+          if (!stop) await save(toEmbed[0], null);
+          return;
+        }
+        // One bad stretch fails its whole batch: embed them one by one, so only that one is set aside.
+        for (const c of toEmbed) {
+          try {
+            await save(c, (await embed([c.text.slice(0, 8000)], feature, priority))[0]);
+          } catch (e1) {
+            if (e1 instanceof AiError && (e1.kind === 'budget' || e1.kind === 'off' || e1.kind === 'busy')) return;
+            log.warn({ chunkId: c.id, err: String(e1) }, 'search chunk skipped');
+            await save(c, null);
+          }
+        }
       }
     }
   }

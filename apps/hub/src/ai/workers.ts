@@ -40,6 +40,18 @@ function errorInfo(data: any): { code: number | null; message: string } {
   return { code: Number.isFinite(code) ? code : null, message: String(e.message ?? '') };
 }
 
+/**
+ * The same value with every string made well-formed: a lone half of a surrogate pair (an emoji cut in two when text is
+ * clipped) becomes U+FFFD. JSON.stringify writes those halves as \ud83d escapes, which Cloudflare refuses with
+ * "body must be valid JSON" (code 8006).
+ */
+export function wellFormed<T>(v: T): T {
+  if (typeof v === 'string') return v.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '�') as T;
+  if (Array.isArray(v)) return v.map(wellFormed) as T;
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, wellFormed(x)])) as T;
+  return v;
+}
+
 async function post(path: string, body: unknown, timeoutMs: number) {
   let res: Response;
   try {
@@ -48,7 +60,7 @@ async function post(path: string, body: unknown, timeoutMs: number) {
     res = await fetch(url, {
       method: 'POST',
       headers: { authorization: `Bearer ${config.ai.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(wellFormed(body)),
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (e) {

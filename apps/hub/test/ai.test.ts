@@ -113,3 +113,12 @@ test('relevantHits keeps close matches near the best one', async () => {
   assert.deepEqual(relevantHits(hits(0.403, 0.401, 0.36)), []);
   assert.deepEqual(relevantHits(hits(0.45, 0.41, 0.33), 0.4, 0.15).map((h) => h.score), [0.45, 0.41]);
 });
+
+test('wellFormed replaces half an emoji so Cloudflare accepts the JSON', async () => {
+  const { wellFormed } = await import('../src/ai/workers.ts');
+  const cut = 'ok 😀'.slice(0, 4); // "ok " plus the first half of the emoji
+  assert.equal(wellFormed(cut), 'ok �');
+  assert.equal(wellFormed('fine 😀 \uDC00x'), 'fine 😀 �x');
+  assert.deepEqual(wellFormed({ input: [cut, 'a'], n: 3 }), { input: ['ok �', 'a'], n: 3 });
+  assert.doesNotMatch(JSON.stringify(wellFormed({ t: cut })), /\\ud8/i);
+});
