@@ -23,11 +23,14 @@ export function App() {
   const me = useQuery({ queryKey: ['me'], queryFn: api.me, staleTime: Infinity });
   const [route, setRoute] = useState<Route>(readHash);
   const { tid, focus, compose } = route;
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(() => location.hash === '#/settings');  // the desktop app links here
   const loggedIn = !!me.data?.loggedIn;
 
   useEffect(() => {
-    const onHash = () => setRoute(readHash());
+    const onHash = () => {
+      setRoute(readHash());
+      if (location.hash === '#/settings') setSettingsOpen(true);
+    };
     // Session ended (or signed out elsewhere): drop what this device has stored, then show the login.
     const onLoggedOut = () => clearLocalData().finally(() => qc.invalidateQueries({ queryKey: ['me'] }));
     window.addEventListener('hashchange', onHash);
@@ -70,7 +73,7 @@ export function App() {
         )}
       </main>
       <SendApprovals />
-      {settingsOpen && <Settings onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <Settings onClose={() => { setSettingsOpen(false); if (location.hash === '#/settings') location.hash = '#/'; }} />}
     </div>
   );
 }

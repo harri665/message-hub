@@ -183,6 +183,10 @@ void App::dev(const QString &cmd) {
     }
     else if (verb == "send") Hub::instance()->send(arg, 0, 0);
     else if (verb == "filter") Hub::instance()->setFilter(arg);
+    else if (verb == "approvals") Hub::instance()->setApprovalsOpen(arg != "off");
+    else if (verb == "approve") Hub::instance()->approveSend(arg.toInt());
+    else if (verb == "reject") Hub::instance()->rejectSend(arg.toInt());
+    else if (verb == "inbox") Hub::instance()->setInboxFilter(arg);  // all | unread | apple | whatsapp
     else if (verb == "older") Hub::instance()->loadOlder();
     else if (verb == "open") Hub::instance()->openThread(arg);
     else if (verb == "reveal") Hub::instance()->revealMessage(arg.toLongLong());

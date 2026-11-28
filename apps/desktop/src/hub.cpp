@@ -257,6 +257,7 @@ Hub::Hub()
     connect(this, &Hub::onlineChanged, this, &Hub::inboxChanged);
     connect(this, &Hub::signedInChanged, this, &Hub::inboxChanged);
 
+    initApprovals();
     readConfig();
     // The glass setting is saved with the rest of the config (after reading it, so reading doesn't write it back).
     connect(Theme::instance(), &Theme::glassModeChanged, this, &Hub::writeConfig);
@@ -573,7 +574,7 @@ void Hub::rebuildThreadModel() {
         m_unreadTotal = unread;
         emit unreadTotalChanged();
     }
-    QList<QVariantMap> source = m_showArchived ? m_archivedThreads : m_allThreads;
+    QList<QVariantMap> source = applyInboxFilter(m_showArchived ? m_archivedThreads : m_allThreads);
     // A line under the last pinned chat parts the pins from the rest.
     for (int i = 0; i < source.size(); ++i)
         if (source.at(i).value("pinned").toBool() && (i + 1 == source.size() || !source.at(i + 1).value("pinned").toBool()))
@@ -1572,7 +1573,8 @@ void Hub::onLive(const QString &text) {
         scheduleThreads(1500);
     } else if (type == "scheduled") {
         if (ev.value("tid").toString() == m_tid) { refreshScheduled(); m_messagesTimer.start(); }
-    } else if (type == "refresh" || type == "send-request") {  // send-request: a message approved in the web app went out
+    } else if (type == "refresh" || type == "send-request") {  // send-request: Claude asked to send, or one was decided
+        if (type == "send-request") refreshApprovals();
         scheduleThreads(1500);
         if (!m_tid.isEmpty()) m_messagesTimer.start();
     }

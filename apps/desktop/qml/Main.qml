@@ -128,6 +128,8 @@ Window {
 
         Menu { id: popup }
 
+        ApprovalsPanel { visible: Hub.approvalsOpen && Hub.signedIn }
+
         // Windows: the caption buttons, flush in the top-right corner, over everything.
         CaptionButtons {
             anchors.top: parent.top
