@@ -78,6 +78,19 @@ export interface SendRequest {
 
 export type SearchService = 'apple' | 'whatsapp' | '';
 
+export interface ContactMatch {
+  personId: number;
+  name: string;
+  /** The person's existing conversation, if there is one. */
+  tid: string | null;
+  addresses: { network: Network; address: string }[];
+}
+
+/** Which services can reach an address. null: couldn't be checked. */
+export interface AddressCheck { address: string; imessage: boolean | null; sms: boolean; whatsapp: boolean | null }
+
+export type ComposeService = 'imessage' | 'sms' | 'whatsapp';
+
 export interface Status {
   bluebubbles: {
     configured: boolean; url: string | null; connected: boolean; privateApi: boolean; serverVersion: string | null; osVersion: string | null;
@@ -132,14 +145,23 @@ export const api = {
   markRead: (tid: string) => post(`/api/threads/${tid}/read`),
   mute: (tid: string, muted: boolean, hours: number | null = null) => post(`/api/threads/${tid}/mute`, { muted, hours }),
   send: (tid: string, body: { text: string; conversationId?: number; replyToId?: number }) => post(`/api/threads/${tid}/send`, body),
-  sendFile: (tid: string, file: File, conversationId?: number, caption?: string) => {
+  sendFile: (tid: string, file: File, conversationId?: number, caption?: string, voice = false) => {
     const form = new FormData();
     // Fields first: the server reads them from the multipart stream before the file.
     if (conversationId) form.set('conversationId', String(conversationId));
     if (caption) form.set('caption', caption);
+    if (voice) form.set('voice', 'true');
     form.set('file', file);
     return post(`/api/threads/${tid}/send-file`, form);
   },
+  reactions: () => request<Record<Network, string[]>>('/api/reactions'),
+  react: (messageId: number, emoji: string | null) => post(`/api/messages/${messageId}/react`, { emoji }),
+  typing: (tid: string, conversationId: number, typing: boolean, audio = false) =>
+    post(`/api/threads/${tid}/typing`, { conversationId, typing, audio }),
+  contacts: (q: string) => request<ContactMatch[]>(`/api/contacts?q=${encodeURIComponent(q)}`),
+  checkAddress: (address: string) => request<AddressCheck>(`/api/compose/check?address=${encodeURIComponent(address)}`),
+  compose: (addresses: string[], service: ComposeService, text: string) =>
+    post<{ ok: true; tid: string }>('/api/compose', { addresses, service, text }),
   search: (q: string, opts: { tid?: string; service?: SearchService; limit?: number; offset?: number } = {}) => {
     const qs = new URLSearchParams({ q, limit: String(opts.limit ?? 40), offset: String(opts.offset ?? 0) });
     if (opts.tid) qs.set('tid', opts.tid);

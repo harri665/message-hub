@@ -49,7 +49,9 @@ export type LiveEvent =
   | { type: 'message-updated'; conversationId: number; messageId: number }
   | { type: 'conversation-updated'; conversationId: number }
   | { type: 'status'; source: 'bluebubbles' | 'whatsapp' }
-  | { type: 'send-request' };
+  | { type: 'send-request' }
+  /** Someone started or stopped typing. sender is a handle address in group chats, null in one-to-one chats. */
+  | { type: 'typing'; conversationId: number; typing: boolean; sender: { network: Network; address: string } | null; audio?: boolean };
 
 export const bus = new EventEmitter();
 bus.setMaxListeners(100);

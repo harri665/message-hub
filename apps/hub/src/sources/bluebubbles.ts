@@ -38,6 +38,9 @@ const TAPBACKS: Record<string, string> = {
   emphasize: '\u203C\uFE0F', question: '\u2753',
 };
 const TAPBACK_CODES = ['love', 'like', 'dislike', 'laugh', 'emphasize', 'question', 'emoji'];
+/** The reactions BlueBubbles can send (its /message/react only takes the six classic tapbacks). */
+export const TAPBACK_EMOJI = Object.values(TAPBACKS);
+const TAPBACK_BY_EMOJI = new Map(Object.entries(TAPBACKS).map(([name, emoji]) => [emoji, name]));
 
 const ROWID_KEY = 'bluebubbles.rowid';
 const res_total = (res: any): number => Number(res?.metadata?.total ?? res?.data?.length ?? 0);
@@ -174,6 +177,13 @@ export class BlueBubbles {
     this.socket.on('updated-message', onMsg);
     this.socket.on('chat-read-status-changed', (d: { chatGuid: string; read: boolean }) => {
       if (d?.read) setConversationRead('apple', d.chatGuid).catch(() => {});
+    });
+    // Private API only, and BlueBubbles drops typing events from group chats.
+    this.socket.on('typing-indicator', (d: { display: boolean; guid: string }) => {
+      if (!d?.guid) return;
+      q1<{ id: number }>(`select id from conversation where network = 'apple' and source_id = $1`, [d.guid])
+        .then((c) => c && emitLive({ type: 'typing', conversationId: c.id, typing: !!d.display, sender: null }))
+        .catch(() => {});
     });
     this.socket.on('group-name-change', (m: BBMessage) => onMsg(m));
     this.socket.on('participant-added', (m: BBMessage) => onMsg(m));
@@ -387,16 +397,78 @@ export class BlueBubbles {
     return res.data;
   }
 
-  async sendFile(chatGuid: string, file: { buffer: Buffer; filename: string; mime: string }) {
+  /** voice: send as an audio message (the file must be .mp3 or .caf; BlueBubbles converts it to a voice memo). */
+  async sendFile(chatGuid: string, file: { buffer: Buffer; filename: string; mime: string }, opts: { voice?: boolean } = {}) {
     const form = new FormData();
     form.set('chatGuid', chatGuid);
     form.set('tempGuid', `temp-${randomUUID()}`);
     form.set('name', file.filename);
     form.set('method', this.status.privateApi ? 'private-api' : 'apple-script');
+    if (opts.voice) form.set('isAudioMessage', 'true');
     form.set('attachment', new Blob([new Uint8Array(file.buffer)], { type: file.mime }), file.filename);
     const res = await this.api('/message/attachment', { body: form });
     if (res.data?.guid) await this.ingest(res.data, false);
     return res.data;
+  }
+
+  private requirePrivateApi(what: string) {
+    if (!this.status.privateApi) {
+      throw Object.assign(new Error(`${what} needs the BlueBubbles Private API, which is off on the Mac.`), { statusCode: 409 });
+    }
+  }
+
+  /** Sets my tapback on a message (emoji is one of TAPBACK_EMOJI), or removes it (pass the current one with remove). */
+  async react(chatGuid: string, messageGuid: string, emoji: string, remove = false) {
+    const name = TAPBACK_BY_EMOJI.get(emoji);
+    if (!name) throw Object.assign(new Error('iMessage only supports the six tapbacks.'), { statusCode: 400 });
+    this.requirePrivateApi('Reacting');
+    const res = await this.api('/message/react', {
+      body: { chatGuid, selectedMessageGuid: messageGuid, reaction: remove ? `-${name}` : name, partIndex: 0 },
+      timeoutMs: 45_000,
+    });
+    if (res.data?.guid) await this.ingest({ ...res.data, chats: res.data.chats?.length ? res.data.chats : [{ guid: chatGuid }] }, false);
+  }
+
+  /** Shows or clears my typing indicator in a chat (iMessage only). */
+  async setTyping(chatGuid: string, typing: boolean) {
+    if (!this.status.privateApi) return;
+    await this.api(`/chat/${encodeURIComponent(chatGuid)}/typing`, { method: typing ? 'POST' : 'DELETE', timeoutMs: 10_000 });
+  }
+
+  /** Whether an address can get iMessages. null when it can't be checked (Private API off, or the Mac didn't answer). */
+  async canIMessage(address: string): Promise<boolean | null> {
+    if (!this.status.privateApi) return null;
+    try {
+      const res = await this.api('/handle/availability/imessage', { query: { address }, timeoutMs: 15_000 });
+      return typeof res.data?.available === 'boolean' ? res.data.available : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Starts a conversation (or continues the existing one) with one or more addresses by sending its first message.
+   * Returns the chat GUID. Group chats need the Private API.
+   */
+  async createChat(addresses: string[], text: string, service: 'iMessage' | 'SMS'): Promise<string> {
+    if (addresses.length > 1) this.requirePrivateApi('Starting a group chat');
+    const res = await this.api('/chat/new', {
+      body: {
+        addresses, message: text, service, tempGuid: `temp-${randomUUID()}`,
+        method: this.status.privateApi ? 'private-api' : 'apple-script',
+      },
+      timeoutMs: 60_000,
+    }).catch((e) => {
+      if (e?.name === 'TimeoutError') {
+        throw Object.assign(new Error("The Mac didn't confirm the message in time. Check Messages on the Mac."), { statusCode: 504 });
+      }
+      throw e;
+    });
+    const chat: BBChat | undefined = res.data;
+    if (!chat?.guid) throw new Error('BlueBubbles did not return the new chat.');
+    await this.upsertChat(chat);
+    for (const m of ((res.data as any).messages ?? []) as BBMessage[]) await this.ingest({ ...m, chats: [chat] }, false);
+    return chat.guid;
   }
 
   async markRead(chatGuid: string) {

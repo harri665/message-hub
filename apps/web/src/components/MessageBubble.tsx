@@ -1,6 +1,7 @@
-import { useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import type { Attachment, Message } from '../api.ts';
-import { SERVICE_LABEL } from '../api.ts';
+import { api, SERVICE_LABEL } from '../api.ts';
 import { clock, fileSize, fullTime, serviceClass } from '../format.ts';
 
 const URL_RE = /(https?:\/\/[^\s<]+[^\s<.,:;"')\]])/g;
@@ -78,12 +79,74 @@ function statusText(m: Message) {
   return 'Sent';
 }
 
+/** Picks my reaction. iMessage offers its six tapbacks, WhatsApp a row of common emoji. Picking the current one removes it. */
+function ReactionPicker({ m, choices, onClose }: { m: Message; choices: string[]; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const mine = m.reactions.find((r) => r.fromMe)?.emoji ?? null;
+
+  useEffect(() => {
+    // The React button toggles the picker itself, so clicks on it don't count as outside.
+    const onDown = (e: PointerEvent) => !ref.current?.parentElement?.contains(e.target as Node) && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('keydown', onKey);
+    ref.current?.querySelector<HTMLButtonElement>('button')?.focus();
+    return () => {
+      document.removeEventListener('pointerdown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+
+  const pick = async (emoji: string) => {
+    setBusy(emoji);
+    setError(null);
+    try {
+      await api.react(m.id, emoji === mine ? null : emoji);
+      await qc.invalidateQueries({ queryKey: ['messages'] });
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not react');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div ref={ref} className="react-picker glass" role="menu" aria-label="React">
+      <div className="react-choices">
+        {choices.map((e) => (
+          <button
+            key={e}
+            type="button"
+            role="menuitemradio"
+            aria-checked={e === mine}
+            className={e === mine ? 'mine' : ''}
+            disabled={!!busy}
+            onClick={() => pick(e)}
+            title={e === mine ? 'Remove your reaction' : undefined}
+          >
+            {e}
+          </button>
+        ))}
+      </div>
+      {busy && <p className="note">Sending</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+    </div>
+  );
+}
+
 export function MessageBubble({
-  m, isGroup, firstInRun, lastInRun, showStatus, highlighted, onReply, onOpenImage,
+  m, isGroup, firstInRun, lastInRun, showStatus, highlighted, onReply, onOpenImage, reactionChoices,
 }: {
   m: Message; isGroup: boolean; firstInRun: boolean; lastInRun: boolean; showStatus: boolean; highlighted?: boolean; onReply: () => void;
   onOpenImage: (src: string) => void;
+  /** Reactions this message's service can send; none while they're loading. */
+  reactionChoices?: string[];
 }) {
+  const [picking, setPicking] = useState(false);
   if (m.kind === 'system') {
     return (
       <p className={`system-msg ${highlighted ? 'hit' : ''}`} data-mid={m.id}>
@@ -127,7 +190,13 @@ export function MessageBubble({
             </div>
           )}
         </div>
-        <button className="msg-action" onClick={onReply} aria-label="Reply">Reply</button>
+        <div className={`msg-actions ${picking ? 'open' : ''}`}>
+          {!m.unsent && !!reactionChoices?.length && (
+            <button className="msg-action" onClick={() => setPicking((p) => !p)} aria-expanded={picking} aria-label="React">React</button>
+          )}
+          <button className="msg-action" onClick={onReply} aria-label="Reply">Reply</button>
+          {picking && reactionChoices && <ReactionPicker m={m} choices={reactionChoices} onClose={() => setPicking(false)} />}
+        </div>
       </div>
       {(lastInRun || showStatus) && (
         <span className="msg-meta">

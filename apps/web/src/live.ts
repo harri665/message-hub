@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Service } from './api.ts';
+import { clearTyping, setTyping } from './stores.ts';
 
 interface LivePreview {
   tid: string;
@@ -20,11 +21,19 @@ type LiveMsg =
   | { type: 'conversation-updated'; conversationId: number }
   | { type: 'status'; source: string }
   | { type: 'send-request' }
-  | { type: 'refresh' };
+  | { type: 'refresh' }
+  | { type: 'typing'; tid: string; conversationId: number; network: 'apple' | 'whatsapp'; typing: boolean; audio: boolean; name: string | null; sender: string | null };
 
 /** Keeps a WebSocket to the hub open and turns its events into cache invalidations and notifications. */
 export function useLive(enabled: boolean, openTid: string | null) {
   const qc = useQueryClient();
+  // Kept in a ref so switching conversations doesn't reconnect the socket.
+  const tidRef = useRef(openTid);
+  tidRef.current = openTid;
+  const reportRef = useRef<() => void>(() => {});
+
+  // The open conversation changed: tell the hub (it subscribes to that WhatsApp chat's typing).
+  useEffect(() => reportRef.current(), [openTid]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -33,6 +42,22 @@ export function useLive(enabled: boolean, openTid: string | null) {
     let retry = 1000;
     let timer: number | undefined;
     const pending = new Set<string>();
+
+    // While this page is visible and focused, WhatsApp shows this device online, as WhatsApp Web does.
+    let lastSent = '';
+    const report = (force = false) => {
+      if (ws?.readyState !== WebSocket.OPEN) return;
+      const msg = JSON.stringify({ type: 'activity', active: !document.hidden && document.hasFocus(), tid: tidRef.current });
+      if (!force && msg === lastSent) return;
+      lastSent = msg;
+      ws.send(msg);
+    };
+    reportRef.current = () => report();
+    const onActivity = () => report();
+    window.addEventListener('focus', onActivity);
+    window.addEventListener('blur', onActivity);
+    document.addEventListener('visibilitychange', onActivity);
+    const heartbeat = window.setInterval(() => report(true), 30_000);
 
     // Batch invalidations so bursts of events cause one refetch per query.
     const flush = () => {
@@ -50,6 +75,7 @@ export function useLive(enabled: boolean, openTid: string | null) {
       ws = new WebSocket(`${proto}://${location.host}/api/live`);
       ws.onopen = () => {
         retry = 1000;
+        report(true);
         invalidate(['threads']);
         invalidate(['messages']);
         invalidate(['send-requests']);
@@ -60,7 +86,15 @@ export function useLive(enabled: boolean, openTid: string | null) {
           case 'message':
             invalidate(['threads']);
             invalidate(['messages']);
-            if (!ev.fromMe && ev.preview) notify(ev.preview, openTid);
+            if (!ev.fromMe && ev.tid) clearTyping(ev.tid);
+            if (!ev.fromMe && ev.preview) notify(ev.preview, tidRef.current);
+            break;
+          case 'typing':
+            setTyping(ev.tid, `${ev.conversationId}:${ev.sender ?? ''}`, ev.typing, {
+              name: ev.name, audio: ev.audio,
+              // iMessage sends one "started typing" and no repeats, so its indicator lasts longer.
+              ttlMs: ev.network === 'apple' ? 60_000 : 25_000,
+            });
             break;
           case 'message-updated':
             invalidate(['messages']);
@@ -95,8 +129,14 @@ export function useLive(enabled: boolean, openTid: string | null) {
       closed = true;
       ws?.close();
       if (timer) clearTimeout(timer);
+      clearInterval(heartbeat);
+      reportRef.current = () => {};
+      window.removeEventListener('focus', onActivity);
+      window.removeEventListener('blur', onActivity);
+      document.removeEventListener('visibilitychange', onActivity);
     };
-  }, [enabled, openTid, qc]);
+
+  }, [enabled, qc]);
 }
 
 function notify(p: LivePreview, openTid: string | null) {

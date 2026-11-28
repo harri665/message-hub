@@ -11,6 +11,10 @@ import type { WhatsApp } from '../sources/whatsapp.js';
 import { bus, emitLive, type LiveEvent } from '../store.js';
 import { cached } from '../cache.js';
 import { approveSendRequest, listSendRequests, rejectSendRequest, sendText } from '../outbox.js';
+import {
+  checkAddress, convertVoice, findContacts, forgetSocket, react, REACTIONS, reportActivity, setTyping, startConversation, updatePresence,
+  type ComposeService,
+} from '../actions.js';
 import { listThreads, searchMessages, threadConversations, threadMessages, type SearchFilter } from '../queries.js';
 
 const THUMB_WIDTHS = new Set([320, 640, 1280]);
@@ -83,8 +87,26 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
       broadcast({ ...ev, ...(row ? { tid: row.tid, preview: row } : {}) });
       return;
     }
+    if (ev.type === 'typing') {
+      const row = await q1<{ tid: string; network: string; name: string | null }>(
+        `select ct.tid, c.network,
+                (select coalesce(pn.name, h.display_name, h.address) from handle h left join person_name pn on pn.person_id = h.person_id
+                 where h.network = c.network and h.address = $2) as name
+         from conversation_thread ct join conversation c on c.id = ct.conversation_id where ct.conversation_id = $1`,
+        [ev.conversationId, ev.sender?.address ?? null],
+      ).catch(() => undefined);
+      if (row) {
+        broadcast({
+          type: 'typing', tid: row.tid, conversationId: ev.conversationId, network: row.network, typing: ev.typing,
+          audio: !!ev.audio, name: row.name, sender: ev.sender?.address ?? null,
+        });
+      }
+      return;
+    }
     broadcast(ev);
   });
+  // A socket that stops reporting activity (sleeping laptop) should not keep WhatsApp marked online.
+  setInterval(() => updatePresence(wa).catch(() => {}), 30_000).unref();
 
   app.get('/api/live', { websocket: true }, async (socket, req) => {
     // WebSockets aren't covered by CORS: only this app's own pages may open the live feed.
@@ -105,9 +127,23 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
     }
     sockets.add(socket);
     const ping = setInterval(() => socket.ping(), 30_000);
+    // The page reports whether it is in use ({type:'activity', active, tid}); WhatsApp shows this device online while it is.
+    socket.on('message', (raw) => {
+      let msg: any;
+      try {
+        msg = JSON.parse(String(raw).slice(0, 1000));
+      } catch {
+        return;
+      }
+      if (msg?.type === 'activity') {
+        const tid = typeof msg.tid === 'string' && /^[pc]\d+$/.test(msg.tid) ? msg.tid : null;
+        reportActivity(wa, socket, !!msg.active, tid).catch(() => {});
+      }
+    });
     socket.on('close', () => {
       sockets.delete(socket);
       clearInterval(ping);
+      forgetSocket(wa, socket);
     });
   });
 
@@ -236,6 +272,38 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
       },
     );
 
+    // ---------- reactions, typing ----------
+    r.get('/api/reactions', async () => REACTIONS);
+
+    r.post<{ Params: { id: string }; Body: { emoji?: string | null } }>('/api/messages/:id/react', async (req) => {
+      await react(bb, wa, Number(req.params.id), req.body?.emoji || null);
+      return { ok: true };
+    });
+
+    r.post<{ Params: { tid: string }; Body: { conversationId?: number; typing?: boolean; audio?: boolean } }>(
+      '/api/threads/:tid/typing',
+      async (req) => {
+        const conv = await pickConversation(req.params.tid, req.body?.conversationId);
+        // Typing is best effort: a failure here should never show up as an error in the composer.
+        await setTyping(bb, wa, conv, !!req.body?.typing, !!req.body?.audio).catch((e) => req.log.warn({ err: String(e) }, 'typing failed'));
+        return { ok: true };
+      },
+    );
+
+    // ---------- new conversations ----------
+    r.get<{ Querystring: { q?: string } }>('/api/contacts', async (req) => findContacts(String(req.query.q ?? '').slice(0, 100)));
+
+    r.get<{ Querystring: { address?: string } }>('/api/compose/check', async (req) => checkAddress(bb, wa, String(req.query.address ?? '').slice(0, 200)));
+
+    r.post<{ Body: { addresses?: string[]; service?: ComposeService; text?: string } }>('/api/compose', async (req, reply) => {
+      const { addresses, service, text } = req.body ?? {};
+      if (!Array.isArray(addresses) || !['imessage', 'sms', 'whatsapp'].includes(String(service))) {
+        return reply.code(400).send({ error: 'addresses and service are required' });
+      }
+      const tid = await startConversation(bb, wa, addresses.map(String), service!, String(text ?? ''));
+      return { ok: true, tid };
+    });
+
     // ---------- messages Claude asked to send: only a signed-in user can approve them ----------
     r.get<{ Querystring: { status?: string } }>('/api/send-requests', async (req) => listSendRequests(req.query.status || undefined));
     r.post<{ Params: { id: string } }>('/api/send-requests/:id/approve', async (req) => approveSendRequest(bb, wa, Number(req.params.id)));
@@ -248,14 +316,22 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
       const fields = part.fields as Record<string, { value?: string } | undefined>;
       const conversationId = fields.conversationId?.value ? Number(fields.conversationId.value) : undefined;
       const caption = fields.caption?.value?.trim() || undefined;
+      // A voice message recorded in the browser: converted to each service's voice note format first.
+      const voice = fields.voice?.value === 'true';
       const conv = await pickConversation(req.params.tid, conversationId);
-      const file = { buffer, filename: part.filename || 'file', mime: part.mimetype || 'application/octet-stream' };
+      let file = { buffer, filename: part.filename || 'file', mime: part.mimetype || 'application/octet-stream' };
+      let seconds = 0;
+      if (voice) {
+        const converted = await convertVoice(buffer, conv.network);
+        file = converted;
+        seconds = converted.seconds;
+      }
       try {
         if (conv.network === 'apple') {
-          await bb.sendFile(conv.source_id, file);
+          await bb.sendFile(conv.source_id, file, { voice });
           if (caption) await bb.sendText(conv.source_id, caption);
         } else {
-          await wa.sendFile(conv.source_id, file, caption);
+          await wa.sendFile(conv.source_id, file, caption, voice ? { seconds } : undefined);
         }
       } catch (e: any) {
         throw Object.assign(new Error(e?.statusCode ? e.message : `Not sent: ${e?.message ?? e}`), { statusCode: e?.statusCode ?? 502 });

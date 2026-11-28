@@ -16,8 +16,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -45,6 +47,10 @@ type App struct {
 	pairing bool
 
 	groupNames sync.Map // chat JID string -> struct{} once the name has been fetched
+
+	// online is true while someone is using the web app. WhatsApp only delivers typing updates to devices
+	// that are marked online, and marking this device online also quiets the phone, like WhatsApp Web does.
+	online atomic.Bool
 }
 
 func env(key, def string) string {
@@ -221,8 +227,11 @@ func (a *App) handleEvent(raw any) {
 		if evt.Name != nil {
 			a.emit(ctx, map[string]any{"type": "chat", "chat": evt.JID.String(), "name": evt.Name.Name, "isGroup": true})
 		}
+	case *events.ChatPresence:
+		a.handleChatPresence(ctx, evt)
 	case *events.Connected:
 		a.log.Infof("connected to WhatsApp")
+		a.restorePresence()
 		a.emit(ctx, map[string]any{"type": "status"})
 	case *events.Disconnected:
 		a.emit(ctx, map[string]any{"type": "status"})
@@ -512,12 +521,27 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /status", a.auth(a.handleStatus))
 	mux.HandleFunc("POST /pair", a.auth(a.handlePair))
 	mux.HandleFunc("POST /logout", a.auth(a.handleLogout))
-	mux.HandleFunc("POST /send", a.auth(a.handleSend))
-	mux.HandleFunc("POST /send-media", a.auth(a.handleSendMedia))
-	mux.HandleFunc("POST /read", a.auth(a.handleRead))
-	mux.HandleFunc("POST /mute", a.auth(a.handleMute))
+	mux.HandleFunc("POST /send", a.auth(a.linked(a.handleSend)))
+	mux.HandleFunc("POST /send-media", a.auth(a.linked(a.handleSendMedia)))
+	mux.HandleFunc("POST /read", a.auth(a.linked(a.handleRead)))
+	mux.HandleFunc("POST /mute", a.auth(a.linked(a.handleMute)))
 	mux.HandleFunc("GET /media", a.auth(a.handleMedia))
+	mux.HandleFunc("POST /react", a.auth(a.linked(a.handleReact)))
+	mux.HandleFunc("POST /typing", a.auth(a.linked(a.handleTyping)))
+	mux.HandleFunc("POST /presence", a.auth(a.handlePresence))
+	mux.HandleFunc("POST /check", a.auth(a.linked(a.handleCheck)))
 	return mux
+}
+
+// linked rejects commands that need a linked WhatsApp account, with a message the web app can show as is.
+func (a *App) linked(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if a.cli.Store.ID == nil {
+			writeErr(w, http.StatusConflict, errors.New("WhatsApp is not linked. Link it in Settings."))
+			return
+		}
+		next(w, r)
+	}
 }
 
 func (a *App) auth(next http.HandlerFunc) http.HandlerFunc {
@@ -659,9 +683,18 @@ func (a *App) handleSendMedia(w http.ResponseWriter, r *http.Request) {
 		mime = http.DetectContentType(data)
 	}
 	caption := r.FormValue("caption")
+	// A voice note recorded in the web app: Ogg Opus, shown on the phone as a playable voice message.
+	ptt := r.FormValue("ptt") == "true"
+	var seconds uint32
+	if n, err := strconv.ParseUint(r.FormValue("seconds"), 10, 32); err == nil {
+		seconds = uint32(n)
+	}
 
 	var mediaType whatsmeow.MediaType
 	switch {
+	case ptt:
+		mediaType = whatsmeow.MediaAudio
+		mime = "audio/ogg; codecs=opus"
 	case strings.HasPrefix(mime, "image/") && mime != "image/gif" && mime != "image/heic":
 		mediaType = whatsmeow.MediaImage
 	case strings.HasPrefix(mime, "video/"):
@@ -692,6 +725,12 @@ func (a *App) handleSendMedia(w http.ResponseWriter, r *http.Request) {
 		msg.AudioMessage = &waE2E.AudioMessage{
 			Mimetype: proto.String(mime), URL: &up.URL, DirectPath: &up.DirectPath,
 			MediaKey: up.MediaKey, FileEncSHA256: up.FileEncSHA256, FileSHA256: up.FileSHA256, FileLength: &up.FileLength,
+		}
+		if ptt {
+			msg.AudioMessage.PTT = proto.Bool(true)
+			if seconds > 0 {
+				msg.AudioMessage.Seconds = proto.Uint32(seconds)
+			}
 		}
 	default:
 		msg.DocumentMessage = &waE2E.DocumentMessage{
@@ -830,4 +869,151 @@ func (a *App) handleMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", mime)
 	_, _ = w.Write(data)
+}
+
+// ---------- typing, reactions, presence ----------
+
+func (a *App) handleChatPresence(ctx context.Context, evt *events.ChatPresence) {
+	if evt.IsFromMe {
+		return
+	}
+	a.emit(ctx, map[string]any{
+		"type": "typing", "chat": a.chatID(ctx, evt.MessageSource), "sender": a.address(ctx, evt.Sender, evt.SenderAlt),
+		"typing": evt.State == types.ChatPresenceComposing, "audio": evt.Media == types.ChatPresenceMediaAudio,
+	})
+}
+
+// handleReact sets (or with an empty emoji, removes) my reaction on a message.
+func (a *App) handleReact(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Chat   string `json:"chat"`
+		ID     string `json:"id"`
+		Sender string `json:"sender"` // address of the message's sender, "" if it was me
+		Emoji  string `json:"emoji"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Chat == "" || req.ID == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("chat and id are required"))
+		return
+	}
+	chat, err := types.ParseJID(req.Chat)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	sender := types.EmptyJID
+	if req.Sender != "" {
+		if sender, err = jidFromAddress(req.Sender); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+	} else if chat.Server != types.GroupServer {
+		// My own message in a one-to-one chat.
+		sender = a.cli.Store.ID.ToNonAD()
+	}
+	resp, err := a.cli.SendMessage(r.Context(), chat, a.cli.BuildReaction(chat, sender, req.ID, req.Emoji))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": resp.ID, "timestamp": resp.Timestamp.UnixMilli()})
+}
+
+// handleTyping shows or clears "typing..." for me in a chat.
+func (a *App) handleTyping(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Chat   string `json:"chat"`
+		Typing bool   `json:"typing"`
+		Audio  bool   `json:"audio"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Chat == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("chat is required"))
+		return
+	}
+	chat, err := types.ParseJID(req.Chat)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	state, media := types.ChatPresencePaused, types.ChatPresenceMediaText
+	if req.Typing {
+		state = types.ChatPresenceComposing
+		if req.Audio {
+			media = types.ChatPresenceMediaAudio
+		}
+	}
+	if err := a.cli.SendChatPresence(r.Context(), chat, state, media); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handlePresence marks this device online while the web app is in use, and subscribes to the open chat's presence
+// so its typing updates arrive.
+func (a *App) handlePresence(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Available bool   `json:"available"`
+		Chat      string `json:"chat"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if !a.cli.IsLoggedIn() {
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": false})
+		return
+	}
+	if a.online.Swap(req.Available) != req.Available {
+		state := types.PresenceUnavailable
+		if req.Available {
+			state = types.PresenceAvailable
+		}
+		if err := a.cli.SendPresence(r.Context(), state); err != nil {
+			a.online.Store(!req.Available)
+			a.log.Warnf("send presence: %v", err)
+		}
+	}
+	if req.Available && req.Chat != "" {
+		if j, err := types.ParseJID(req.Chat); err == nil && j.Server != types.GroupServer {
+			if err := a.cli.SubscribePresence(r.Context(), j); err != nil {
+				a.log.Debugf("subscribe presence %s: %v", j, err)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// restorePresence re-sends the online state after a reconnect (a new connection starts out offline).
+func (a *App) restorePresence() {
+	if !a.online.Load() {
+		return
+	}
+	go func() {
+		if err := a.cli.SendPresence(context.Background(), types.PresenceAvailable); err != nil {
+			a.log.Warnf("restore presence: %v", err)
+		}
+	}()
+}
+
+// handleCheck says whether a phone number has WhatsApp, and returns the chat id to message it at.
+func (a *App) handleCheck(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Phone string `json:"phone"` // E.164, like +15551234567
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !strings.HasPrefix(req.Phone, "+") {
+		writeErr(w, http.StatusBadRequest, errors.New("phone in +E.164 form is required"))
+		return
+	}
+	res, err := a.cli.IsOnWhatsApp(r.Context(), []string{req.Phone})
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	for _, x := range res {
+		if x.IsIn {
+			writeJSON(w, http.StatusOK, map[string]any{"on": true, "chat": x.JID.ToNonAD().String()})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"on": false})
 }

@@ -14,6 +14,8 @@ COPY apps/hub/ ./
 RUN npm run build && npm prune --omit=dev
 
 FROM node:22-alpine
+# ffmpeg converts voice messages recorded in the browser to each service's voice note format.
+RUN apk add --no-cache ffmpeg
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=8080 \

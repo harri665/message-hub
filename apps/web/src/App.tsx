@@ -8,20 +8,21 @@ import { Sidebar } from './components/Sidebar.tsx';
 import { ThreadView } from './components/ThreadView.tsx';
 import { Settings } from './components/Settings.tsx';
 import { SendApprovals } from './components/SendApprovals.tsx';
+import { NewMessage } from './components/NewMessage.tsx';
 
-interface Route { tid: string | null; focus: number | null }
+interface Route { tid: string | null; focus: number | null; compose: boolean }
 
-/** #/t/p12 opens a conversation; #/t/p12/m/345 opens it at message 345. */
+/** #/t/p12 opens a conversation; #/t/p12/m/345 opens it at message 345; #/new starts a new one. */
 function readHash(): Route {
   const m = location.hash.match(/^#\/t\/([pc]\d+)(?:\/m\/(\d+))?/);
-  return { tid: m ? m[1] : null, focus: m?.[2] ? Number(m[2]) : null };
+  return { tid: m ? m[1] : null, focus: m?.[2] ? Number(m[2]) : null, compose: location.hash === '#/new' };
 }
 
 export function App() {
   const qc = useQueryClient();
   const me = useQuery({ queryKey: ['me'], queryFn: api.me, staleTime: Infinity });
   const [route, setRoute] = useState<Route>(readHash);
-  const { tid, focus } = route;
+  const { tid, focus, compose } = route;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const loggedIn = !!me.data?.loggedIn;
 
@@ -49,10 +50,12 @@ export function App() {
   }
 
   return (
-    <div className={`shell ${tid ? 'has-thread' : ''}`}>
-      <Sidebar activeTid={tid} onOpen={open} onSettings={() => setSettingsOpen(true)} />
+    <div className={`shell ${tid || compose ? 'has-thread' : ''}`}>
+      <Sidebar activeTid={tid} composing={compose} onOpen={open} onNew={() => (location.hash = '#/new')} onSettings={() => setSettingsOpen(true)} />
       <main className="pane glass-thin">
-        {tid ? (
+        {compose ? (
+          <NewMessage onOpen={(next) => open(next)} onCancel={() => history.length > 1 ? history.back() : open(null)} />
+        ) : tid ? (
           <ThreadView
             key={tid}
             tid={tid}

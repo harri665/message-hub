@@ -3,6 +3,7 @@ import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-quer
 import { api, SERVICE_LABEL, type MessagePage, type ThreadSummary } from '../api.ts';
 import { initials, listTime, serviceClass } from '../format.ts';
 import { Highlight } from './Highlight.tsx';
+import { useDrafts, useTyping } from '../stores.ts';
 
 type Filter = 'all' | 'unread' | 'apple' | 'whatsapp';
 const FILTERS: { key: Filter; label: string }[] = [
@@ -26,14 +27,31 @@ function preview(t: ThreadSummary) {
   return body;
 }
 
+/** Typing beats a draft, and a draft beats the last message, as in Messages and WhatsApp. */
+function RowPreview({ t, typing, draft }: { t: ThreadSummary; typing: boolean; draft?: string }) {
+  if (typing) return <span className="thread-preview typing-text">typing...</span>;
+  if (draft?.trim()) {
+    return (
+      <span className="thread-preview">
+        <span className="draft-tag">Draft:</span> {draft.trim().replace(/\s+/g, ' ')}
+      </span>
+    );
+  }
+  return <span className="thread-preview">{preview(t)}</span>;
+}
+
 const SEARCH_PAGE = 40;
 
-export function Sidebar({ activeTid, onOpen, onSettings }: {
+export function Sidebar({ activeTid, composing, onOpen, onNew, onSettings }: {
   activeTid: string | null;
+  composing: boolean;
   onOpen: (tid: string, messageId?: number) => void;
+  onNew: () => void;
   onSettings: () => void;
 }) {
   const qc = useQueryClient();
+  const drafts = useDrafts();
+  const typing = useTyping();
   const threads = useQuery({ queryKey: ['threads'], queryFn: api.threads, refetchInterval: 60_000 });
   // Pointing at a conversation starts loading it, so it's usually ready by the time it's clicked.
   const prefetch = (tid: string) => {
@@ -69,10 +87,15 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
         searchRef.current?.focus();
         searchRef.current?.select();
       }
+      // Ctrl/Cmd+Alt+N: new message (plain Ctrl+N belongs to the browser).
+      if ((e.ctrlKey || e.metaKey) && e.altKey && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        onNew();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [onNew]);
 
   const filtered = useMemo(() => {
     let list = threads.data ?? [];
@@ -101,7 +124,10 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
     <aside className="sidebar glass">
       <header className="sidebar-head">
         <h1>Messages</h1>
-        <button className="pill-btn" onClick={onSettings}>Settings</button>
+        <div className="sidebar-actions">
+          <button className="pill-btn" onClick={onSettings}>Settings</button>
+          <button className="pill-btn primary" onClick={onNew} aria-pressed={composing} title="New message (Ctrl+Alt+N)">New</button>
+        </div>
       </header>
       <div className="sidebar-tools">
         <input
@@ -152,7 +178,7 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
                 <time className="thread-time">{listTime(t.last_at)}</time>
               </span>
               <span className="thread-bottom">
-                <span className="thread-preview">{preview(t)}</span>
+                <RowPreview t={t} typing={!!typing[t.tid]?.length} draft={t.tid !== activeTid ? drafts[t.tid] : undefined} />
                 <span className="thread-badges">
                   {t.muted && <span className="muted-tag" title={mutedLabel(t.muted_until)}>Muted</span>}
                   {t.last_service && (

@@ -5,6 +5,7 @@ import { dayLabel, initials, listTime, sameDay, serviceClass } from '../format.t
 import { Highlight } from './Highlight.tsx';
 import { MessageBubble } from './MessageBubble.tsx';
 import { Composer } from './Composer.tsx';
+import { useTyping } from '../stores.ts';
 
 const PAGE = 60;
 
@@ -13,6 +14,10 @@ export interface Pending {
   key: string;
   text?: string;
   file?: File;
+  /** Object URL of an image being sent, shown until the server has it. */
+  previewUrl?: string;
+  /** A recorded voice message (converted to each service's voice note format by the hub). */
+  voice?: boolean;
   conversationId: number;
   service: Service;
   replyToId?: number;
@@ -100,11 +105,15 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
       );
       scrollRef.current?.scrollTo({ top: 0 });
       try {
-        if (p.file) await api.sendFile(tid, p.file, p.conversationId, p.text);
+        if (p.file) await api.sendFile(tid, p.file, p.conversationId, p.text, p.voice);
         else await api.send(tid, { text: p.text!, conversationId: p.conversationId, replyToId: p.replyToId });
         await qc.invalidateQueries({ queryKey: ['messages', tid] });
         qc.invalidateQueries({ queryKey: ['threads'] });
-        setPending((cur) => cur.filter((x) => x.key !== key));
+        setPending((cur) => {
+          const done = cur.find((x) => x.key === key);
+          if (done?.previewUrl) URL.revokeObjectURL(done.previewUrl);
+          return cur.filter((x) => x.key !== key);
+        });
       } catch (err) {
         setPending((cur) => cur.map((x) => (x.key === key ? { ...x, status: 'failed', error: err instanceof Error ? err.message : 'Not sent' } : x)));
       }
@@ -112,6 +121,8 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
     [tid, qc, focus, onFocus],
   );
 
+  const reactionSets = useQuery({ queryKey: ['reactions'], queryFn: api.reactions, staleTime: Infinity });
+  const typists = useTyping()[tid] ?? [];
   const t = thread.data;
   const services = Array.from(new Set(t?.conversations.map((c) => c.lastService) ?? []));
   const lastFromMeId = [...list].reverse().find((m) => m.from_me && m.kind === 'text')?.id;
@@ -157,6 +168,7 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
                   showStatus={m.id === lastFromMeId && !pending.length}
                   onReply={() => setReplyTo(m)}
                   onOpenImage={setLightbox}
+                  reactionChoices={reactionSets.data?.[t?.conversations.find((c) => c.id === m.conversation_id)?.network ?? (m.service === 'whatsapp' ? 'whatsapp' : 'apple')]}
                 />
               </Fragment>
             );
@@ -170,7 +182,13 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
             <div key={p.key} className={`msg out first last ${serviceClass(p.service)} ${p.status === 'failed' ? 'failed' : 'pending'}`}>
               <div className="msg-row">
                 <div className="msg-stack">
-                  {p.file && <div className="att-file"><span className="att-name">{p.file.name}</span></div>}
+                  {p.voice ? (
+                    <div className="att-file"><span className="att-name">Voice message</span></div>
+                  ) : p.previewUrl ? (
+                    <div className="att-media pending-media"><img src={p.previewUrl} alt={p.file?.name ?? ''} /></div>
+                  ) : (
+                    p.file && <div className="att-file"><span className="att-name">{p.file.name}</span></div>
+                  )}
                   {p.text && <div className="bubble">{p.text}</div>}
                 </div>
               </div>
@@ -185,6 +203,16 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
               </span>
             </div>
           ))}
+          {typists.length > 0 && !messages.hasPreviousPage && (
+            <div className="msg in first last typing-row" aria-live="polite">
+              {t?.isGroup && <span className="msg-sender">{typingLabel(typists)}</span>}
+              <div className="msg-row">
+                <div className="bubble typing-bubble" aria-label={typingLabel(typists)}>
+                  {typists.some((x) => x.audio) ? <span className="typing-audio">Recording audio</span> : <><i /><i /><i /></>}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -230,6 +258,14 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
       )}
     </section>
   );
+}
+
+function typingLabel(list: { name: string | null; audio: boolean }[]) {
+  const names = list.map((x) => x.name).filter(Boolean) as string[];
+  const verb = list.some((x) => x.audio) ? 'recording audio' : 'typing';
+  if (!names.length) return `${verb[0].toUpperCase()}${verb.slice(1)}`;
+  if (names.length === 1) return `${names[0]} is ${verb}`;
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} are ${verb}`;
 }
 
 /** Search inside one conversation; picking a result opens the conversation at that message. */

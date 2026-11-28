@@ -4,6 +4,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 import type { PersistedClient } from '@tanstack/react-query-persist-client';
 import { del, get, set } from 'idb-keyval';
+import { clearDrafts } from './stores.ts';
 
 export const MEDIA_CACHE = 'mh-media-v1';
 const DAY = 24 * 60 * 60_000;
@@ -45,6 +46,7 @@ export const persistOptions = { persister, maxAge: DAY, buster: 'v1' };
 export async function clearLocalData() {
   // Keep the login state itself so the app can switch to the sign-in screen.
   queryClient.removeQueries({ predicate: (q) => q.queryKey[0] !== 'me' });
+  clearDrafts();
   await persister.removeClient();
   if (typeof caches !== 'undefined') await caches.delete(MEDIA_CACHE).catch(() => false);
 }

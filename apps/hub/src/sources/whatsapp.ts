@@ -21,6 +21,7 @@ type WAEvent =
   | { type: 'receipt'; chat: string; ids: string[]; kind: 'delivered' | 'read' | 'read-self'; timestamp: number }
   | { type: 'contact'; address: string; name: string; source: NameSource }
   | { type: 'chat'; chat: string; name: string; isGroup: boolean }
+  | { type: 'typing'; chat: string; sender: string; typing: boolean; audio: boolean }
   | { type: 'status' };
 
 export interface WAStatus {
@@ -47,6 +48,8 @@ export class WhatsApp {
     });
     if (!res.ok) {
       const j: any = await res.json().catch(() => ({}));
+      // 409: WhatsApp isn't linked; that message is written for the user.
+      if (res.status === 409 && j.error) throw Object.assign(new Error(j.error), { statusCode: 409 });
       throw new Error(`WhatsApp connector ${p}: ${res.status} ${j.error ?? ''}`.trim());
     }
     return res.json() as Promise<T>;
@@ -193,6 +196,16 @@ export class WhatsApp {
       case 'chat':
         await upsertConversation('whatsapp', { sourceId: ev.chat, title: ev.name, isGroup: ev.isGroup });
         break;
+      case 'typing': {
+        const c = await q1<{ id: number; is_group: boolean }>(`select id, is_group from conversation where network = 'whatsapp' and source_id = $1`, [ev.chat]);
+        if (c) {
+          emitLive({
+            type: 'typing', conversationId: c.id, typing: ev.typing, audio: ev.audio,
+            sender: c.is_group && ev.sender ? { network: 'whatsapp', address: ev.sender } : null,
+          });
+        }
+        break;
+      }
       case 'status':
         emitLive({ type: 'status', source: 'whatsapp' });
         break;
@@ -223,16 +236,21 @@ export class WhatsApp {
   async sendText(chat: string, text: string, replyTo?: { id: string; sender: string; text: string } | null) {
     const res = await this.call<{ id: string; timestamp: number }>('/send', { method: 'POST', body: JSON.stringify({ chat, text, replyTo: replyTo ?? undefined }) });
     await ingestMessage({
-      network: 'whatsapp', service: 'whatsapp', conversation: { sourceId: chat, isGroup: chat.endsWith('@g.us') },
+      network: 'whatsapp', service: 'whatsapp', conversation: conversationFor(chat),
       sourceId: res.id, sender: null, fromMe: true, body: text, sentAt: new Date(res.timestamp), replyToSourceId: replyTo?.id ?? null,
     });
     return res;
   }
 
-  async sendFile(chat: string, file: { buffer: Buffer; filename: string; mime: string }, caption?: string) {
+  /** voice: an Ogg Opus voice note (seconds is its length). */
+  async sendFile(chat: string, file: { buffer: Buffer; filename: string; mime: string }, caption?: string, voice?: { seconds: number }) {
     const form = new FormData();
     form.set('chat', chat);
     if (caption) form.set('caption', caption);
+    if (voice) {
+      form.set('ptt', 'true');
+      form.set('seconds', String(Math.round(voice.seconds)));
+    }
     form.set('file', new Blob([new Uint8Array(file.buffer)], { type: file.mime }), file.filename);
     const res = await this.call<{ id: string; timestamp: number; mime: string }>('/send-media', { method: 'POST', body: form });
     // Keep our own copy so the sent file shows immediately without a round trip.
@@ -240,11 +258,32 @@ export class WhatsApp {
     await fsp.mkdir(path.dirname(path.join(config.attachmentsDir, rel)), { recursive: true });
     await fsp.writeFile(path.join(config.attachmentsDir, rel), file.buffer);
     await ingestMessage({
-      network: 'whatsapp', service: 'whatsapp', conversation: { sourceId: chat, isGroup: chat.endsWith('@g.us') },
+      network: 'whatsapp', service: 'whatsapp', conversation: conversationFor(chat),
       sourceId: res.id, sender: null, fromMe: true, body: caption || null, sentAt: new Date(res.timestamp),
       attachments: [{ sourceId: res.id, mime: res.mime, filename: file.filename, size: file.buffer.length, storagePath: rel }],
     });
     return res;
+  }
+
+  /** Sets my reaction on a message, or removes it (emoji null). WhatsApp doesn't echo my own reactions back, so store it here. */
+  async react(chat: string, target: { sourceId: string; senderAddress: string | null }, emoji: string | null) {
+    await this.call('/react', { method: 'POST', body: JSON.stringify({ chat, id: target.sourceId, sender: target.senderAddress ?? '', emoji: emoji ?? '' }) });
+    await setReaction('whatsapp', target.sourceId, null, emoji);
+  }
+
+  async setTyping(chat: string, typing: boolean, audio = false) {
+    await this.call('/typing', { method: 'POST', body: JSON.stringify({ chat, typing, audio }) });
+  }
+
+  /** Online while the web app is in use (needed to receive typing updates); chat is the open one-to-one chat, if any. */
+  async setPresence(available: boolean, chat?: string | null) {
+    if (!this.configured) return;
+    await this.call('/presence', { method: 'POST', body: JSON.stringify({ available, chat: chat ?? '' }) });
+  }
+
+  /** Whether a +E.164 number has WhatsApp, and the chat id to message it at. */
+  async check(phone: string): Promise<{ on: boolean; chat?: string }> {
+    return this.call('/check', { method: 'POST', body: JSON.stringify({ phone }) });
   }
 
   async markRead(conversationId: number, chat: string) {
@@ -282,6 +321,14 @@ export class WhatsApp {
     await q('update attachment set storage_path = $2, mime = coalesce(mime, $3), size = coalesce(size, $4) where id = $1', [attachmentId, rel, mime, buf.length]);
     return rel;
   }
+}
+
+/** The conversation a sent message belongs to. One-to-one chats list the other person, so they merge with that person's other chats. */
+function conversationFor(chat: string) {
+  const isGroup = chat.endsWith('@g.us');
+  const [user, server] = chat.split('@');
+  const address = server === 's.whatsapp.net' ? `+${user}` : server === 'lid' ? `lid:${user}` : null;
+  return { sourceId: chat, isGroup, members: !isGroup && address ? [{ address }] : [] };
 }
 
 function safe(s: string) {

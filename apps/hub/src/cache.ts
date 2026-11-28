@@ -8,8 +8,9 @@ const MAX_ENTRIES = 500;
 const TTL_MS = 5 * 60_000;
 
 let version = 0;
-bus.on('live', () => {
-  version++;
+bus.on('live', (ev: { type?: string }) => {
+  // Typing indicators change nothing that is cached.
+  if (ev?.type !== 'typing') version++;
 });
 
 interface Entry { version: number; at: number; value: Promise<unknown> }
