@@ -27,7 +27,7 @@ qt_standard_project_setup(REQUIRES 6.5)
 qt_add_executable(message-hub
   src/main.cpp
   src/app.h
-  src/hub.h src/hub.cpp src/linkpreviews.cpp src/imageviewer.cpp
+  src/hub.h src/hub.cpp src/compose.cpp src/linkpreviews.cpp src/imageviewer.cpp
   src/theme.h src/theme.cpp
   src/listmodel.h src/listmodel.cpp
   src/searchassist.h src/searchassist.cpp
@@ -66,6 +66,7 @@ qt_add_qml_module(message-hub
     qml/ScheduledRow.qml
     qml/SchedulePicker.qml
     qml/GlassEdge.qml
+    qml/NewMessage.qml
   RESOURCES
     ../web/public/icons/icon-192.png
 )

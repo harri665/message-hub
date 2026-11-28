@@ -239,6 +239,9 @@ void App::dev(const QString &cmd) {
     else if (verb == "settings" && w) {
         if (auto *s = w->findChild<QObject *>("sidebar")) QMetaObject::invokeMethod(s, "openSettings");
     }
+    else if (verb == "new" && w) {  // open the New Message view, as the compose button does
+        if (auto *s = w->findChild<QObject *>("sidebar")) QMetaObject::invokeMethod(s, "compose");
+    }
     else if (verb == "resize" && w) w->resize(arg.section('x', 0, 0).toInt(), arg.section('x', 1).toInt());
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
     // scheme light|dark|system: override the system's colour mode for this app (MacShell's darkMode still wins).

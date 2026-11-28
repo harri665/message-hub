@@ -13,6 +13,7 @@ Window {
     color: "transparent"
     flags: Qt.Window | Qt.FramelessWindowHint
 
+    property bool composing: false  // the New Message view replaces the open conversation
     onActiveChanged: Hub.windowActive = active
     Component.onCompleted: Hub.windowActive = active
     // Closing frees the window and everything in it; the app keeps running small for notifications.
@@ -20,6 +21,7 @@ Window {
 
     Shortcut { sequence: "Ctrl+F"; onActivated: sidebar.focusSearch() }
     Shortcut { sequence: "Ctrl+K"; onActivated: sidebar.focusSearch() }
+    Shortcut { sequence: "Ctrl+N"; onActivated: { win.composing = true; newMessage.focusTo(); } }
     Shortcut { sequence: "Ctrl+W"; onActivated: win.close() }
     Shortcut { sequence: "Ctrl+Q"; onActivated: App.quit() }
     Shortcut { sequence: "Ctrl+R"; onActivated: Hub.refresh() }
@@ -46,7 +48,8 @@ Window {
             width: Math.round(Math.min(340, Math.max(260, win.width * 0.3)))
             height: parent.height
             visible: Hub.signedIn
-            onOpened: view.focusComposer()
+            onOpened: { win.composing = false; view.focusComposer(); }
+            onComposeRequested: { win.composing = true; newMessage.focusTo(); }
         }
         Rectangle {
             x: sidebar.width
@@ -62,8 +65,17 @@ Window {
             height: parent.height - 1
             window: win
             menu: popup
-            visible: Hub.signedIn
+            visible: Hub.signedIn && !win.composing
             onImageRequested: id => viewer.open(id)
+        }
+        NewMessage {
+            id: newMessage
+            x: view.x
+            width: view.width
+            height: view.height
+            window: win
+            visible: Hub.signedIn && win.composing
+            onClosed: { win.composing = false; view.focusComposer(); }
         }
         Login {
             anchors.fill: parent

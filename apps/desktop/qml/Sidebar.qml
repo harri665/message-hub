@@ -7,6 +7,8 @@ Rectangle {
     required property Window window
     required property Menu menu
     signal opened()
+    signal composeRequested()
+    function compose() { side.composeRequested(); }
     color: Theme.bar
 
     readonly property bool searching: Hub.filter.trim().length > 0
@@ -65,6 +67,17 @@ Rectangle {
             onClicked: side.openSettings()
         }
     }
+    // New message: beside the gear (towards the middle of the header).
+    Item {
+        id: newBtn
+        x: Platform.windowControls === "mac" ? gear.x - width - 4 : gear.x + gear.width + 4
+        y: 12
+        width: 26
+        height: 26
+        Rectangle { anchors.fill: parent; radius: 6; color: newMa.containsMouse ? Theme.ctrl : "transparent" }
+        Glyph { anchors.centerIn: parent; name: "plus"; width: 15; height: 15; stroke: 1.6; color: newMa.containsMouse ? Theme.text : Theme.text2 }
+        MouseArea { id: newMa; anchors.fill: parent; hoverEnabled: true; onClicked: side.compose() }
+    }
     function openSettings() {
         const p = gear.mapToItem(side.menu, 0, gear.height + 4);
         const set = mode => () => { Theme.glassMode = mode; };
@@ -91,7 +104,7 @@ Rectangle {
 
     // Connection state: a quiet dot, as in MacShell's menus.
     Row {
-        x: Platform.windowControls === "mac" ? gear.x - 6 - width : gear.x + gear.width + 8
+        x: Platform.windowControls === "mac" ? newBtn.x - 6 - width : newBtn.x + newBtn.width + 8
         y: 18
         spacing: 6
         visible: !Hub.online
