@@ -194,6 +194,21 @@ void App::dev(const QString &cmd) {
     else if (verb == "close") closeWindow();
     else if (verb == "login") Hub::instance()->login(arg.section(' ', 0, 0), arg.section(' ', 1));
     else if (verb == "logout") Hub::instance()->logout();
+    // viewer open <attachment id> | step <-1|1> | zoomAt <zoom> <x> <y> | toggleZoom <x> <y> | close: drives the image viewer.
+    else if (verb == "viewer" && w) {
+        if (auto *l = w->findChild<QObject *>("imageViewer")) {
+            const QStringList a = arg.split(' ', Qt::SkipEmptyParts);
+            const QByteArray method = a.value(0).toLatin1();
+            QVariantList v;
+            for (int i = 1; i < a.size(); ++i) v << a.at(i).toDouble();
+            switch (v.size()) {
+            case 0: QMetaObject::invokeMethod(l, method.constData()); break;
+            case 1: QMetaObject::invokeMethod(l, method.constData(), Q_ARG(QVariant, v.at(0))); break;
+            case 2: QMetaObject::invokeMethod(l, method.constData(), Q_ARG(QVariant, v.at(0)), Q_ARG(QVariant, v.at(1))); break;
+            default: QMetaObject::invokeMethod(l, method.constData(), Q_ARG(QVariant, v.at(0)), Q_ARG(QVariant, v.at(1)), Q_ARG(QVariant, v.at(2)));
+            }
+        }
+    }
     else if (verb == "top" && w) {
         if (auto *l = w->findChild<QObject *>("messageList")) QMetaObject::invokeMethod(l, "positionViewAtEnd");
     } else if (verb == "list" && w) {
@@ -244,8 +259,11 @@ QQuickImageResponse *AttachmentImages::requestImageResponse(const QString &id, c
             if (!formats.isEmpty()) reader.setFormat(formats.first());
             reader.setAutoTransform(true);
             QSize size = reader.size();
-            if (size.isValid() && requested.isValid() && (requested.width() > 0 || requested.height() > 0)) {
-                QSize box(requested.width() > 0 ? requested.width() : INT_MAX, requested.height() > 0 ? requested.height() : INT_MAX);
+            // A request for 0x0 is the image viewer's full-size copy: only absurdly large pictures are scaled down.
+            const bool unbounded = !(requested.width() > 0 || requested.height() > 0);
+            const QSize wanted = unbounded ? QSize(6144, 6144) : requested;
+            if (size.isValid() && wanted.isValid() && (wanted.width() > 0 || wanted.height() > 0)) {
+                QSize box(wanted.width() > 0 ? wanted.width() : INT_MAX, wanted.height() > 0 ? wanted.height() : INT_MAX);
                 if (reader.transformation() & QImageIOHandler::TransformationRotate90) size.transpose();
                 if (size.width() > box.width() || size.height() > box.height()) {
                     QSize scaled = size.scaled(box, Qt::KeepAspectRatio);
@@ -293,9 +311,11 @@ QQuickImageResponse *AttachmentImages::requestImageResponse(const QString &id, c
     }
     const qint64 att = id.section('?', 0, 0).toLongLong();
     const bool retry = id.contains("retry=");
+    // ?full=1 (the image viewer): the original file at full resolution, not a resized copy.
+    const bool full = id.contains("full=1");
     // Ask the hub for the smallest resized copy that covers the size on screen (older hubs ignore it).
     const int want = requested.width() > 0 ? requested.width() : 1280;
-    const int width = want <= 320 ? 320 : want <= 640 ? 640 : 1280;
+    const int width = full ? 0 : want <= 320 ? 320 : want <= 640 ? 640 : 1280;
     QMetaObject::invokeMethod(Hub::instance(), [r, att, width, retry, decode] {
         Hub::instance()->fetchAttachment(att, width, retry, [r, decode](const QString &path, const QString &err) {
             if (!err.isEmpty()) {

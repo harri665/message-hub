@@ -63,6 +63,7 @@ Window {
             window: win
             menu: popup
             visible: Hub.signedIn
+            onImageRequested: id => viewer.open(id)
         }
         Login {
             anchors.fill: parent
@@ -106,6 +107,11 @@ Window {
             radius: frame.radius
             rim: Theme.edgeLight
             sheen: Theme.edgeSheen
+        }
+
+        ImageViewer {
+            id: viewer
+            onClosed: view.focusComposer()
         }
 
         Menu { id: popup }

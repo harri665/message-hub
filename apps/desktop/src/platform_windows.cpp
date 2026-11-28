@@ -13,6 +13,7 @@
 #include <QPointer>
 #include <QQuickWindow>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QSystemTrayIcon>
 #include <QTimer>
 #include <iterator>
@@ -183,6 +184,15 @@ void Platform::pickFiles(const QString &title, std::function<void(const QList<QU
     QTimer::singleShot(0, this, [title, done] {
         const QList<QUrl> urls = QFileDialog::getOpenFileUrls(nullptr, title);
         if (!urls.isEmpty() && done) done(urls);
+    });
+}
+
+void Platform::saveFile(const QString &title, const QString &suggestedName, std::function<void(const QUrl &)> done,
+                        std::function<void(const QString &)>) {
+    QTimer::singleShot(0, this, [title, suggestedName, done] {
+        const QString dir = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+        const QString path = QFileDialog::getSaveFileName(nullptr, title, dir.isEmpty() ? suggestedName : QDir(dir).filePath(suggestedName));
+        if (!path.isEmpty() && done) done(QUrl::fromLocalFile(path));
     });
 }
 

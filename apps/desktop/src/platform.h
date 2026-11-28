@@ -76,6 +76,10 @@ public:
     // The system's file picker; done() gets the chosen files (not called when cancelled), failed() an error message.
     void pickFiles(const QString &title, std::function<void(const QList<QUrl> &)> done, std::function<void(const QString &)> failed);
 
+    // The system's "save as" dialog, suggesting a file name; done() gets the chosen file (not called when cancelled).
+    void saveFile(const QString &title, const QString &suggestedName, std::function<void(const QUrl &)> done,
+                  std::function<void(const QString &)> failed);
+
     // A new window was just created: set up its frame (Windows 11: system rounded corners and shadow, ready for glass).
     void prepareWindow(QQuickWindow *w);
     // Compositor glass behind the window. again: a repeat shortly after the window first appears, for compositors that
