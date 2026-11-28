@@ -97,11 +97,21 @@ jobs:
             -d message-hub.desktop -i message-hub.png --plugin qt
           mkdir pack
           cp -a AppDir/usr/lib AppDir/usr/plugins pack/
+          # linuxdeploy-plugin-qt skips Wayland's EGL client buffer plugin. Without it Qt can't create an OpenGL
+          # context on a Wayland session ("Failed to load client buffer integration: wayland-egl") and the app
+          # crashes at start. Its libraries (Qt6WaylandEglClientHwIntegration, Qt6OpenGL) are already bundled.
+          egl=wayland-graphics-integration-client/libqt-plugin-wayland-egl.so
+          mkdir -p "pack/plugins/$(dirname $egl)"
+          cp "$QT_ROOT_DIR/plugins/$egl" "pack/plugins/$egl"
+          patchelf --set-rpath '$ORIGIN/../../lib' "pack/plugins/$egl"
           [ -d AppDir/usr/qml ] && cp -a AppDir/usr/qml pack/
           cp AppDir/usr/bin/message-hub pack/
           patchelf --set-rpath '$ORIGIN/lib' pack/message-hub
           printf '[Paths]\nPrefix = .\nPlugins = plugins\nQml2Imports = qml\n' > pack/qt.conf
           echo "Packaged platform plugins:"; ls pack/plugins/platforms
+          # The offscreen smoke test below can't catch a missing Wayland plugin, so check that its libraries resolve.
+          LD_LIBRARY_PATH= ldd "pack/plugins/$egl" | grep -q "not found" && { ldd "pack/plugins/$egl"; exit 1; }
+          echo "Wayland EGL plugin packaged"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
