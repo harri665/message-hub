@@ -223,6 +223,7 @@ Hub::Hub()
     connect(this, &Hub::onlineChanged, this, &Hub::inboxChanged);
     connect(this, &Hub::signedInChanged, this, &Hub::inboxChanged);
 
+    initApprovals();
     readConfig();
     // The glass setting is saved with the rest of the config (after reading it, so reading doesn't write it back).
     connect(Theme::instance(), &Theme::glassModeChanged, this, &Hub::writeConfig);
@@ -525,7 +526,7 @@ void Hub::rebuildThreadModel() {
         m_unreadTotal = unread;
         emit unreadTotalChanged();
     }
-    const auto &source = m_showArchived ? m_archivedThreads : m_allThreads;
+    const QList<QVariantMap> source = applyInboxFilter(m_showArchived ? m_archivedThreads : m_allThreads);
     if (m_filter.trimmed().isEmpty()) {
         m_threadModel.setRows(source);
         return;
@@ -1304,7 +1305,8 @@ void Hub::onLive(const QString &text) {
         scheduleThreads(1500);
     } else if (type == "scheduled") {
         if (ev.value("tid").toString() == m_tid) { refreshScheduled(); m_messagesTimer.start(); }
-    } else if (type == "refresh" || type == "send-request") {  // send-request: a message approved in the web app went out
+    } else if (type == "refresh" || type == "send-request") {  // send-request: Claude asked to send, or one was decided
+        if (type == "send-request") refreshApprovals();
         scheduleThreads(1500);
         if (!m_tid.isEmpty()) m_messagesTimer.start();
     }

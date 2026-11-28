@@ -138,6 +138,49 @@ public:
     void releaseView();
     bool idle() const { return m_writes == 0; }
 
+    // ---- send approvals, status, filters (approvals.cpp) ----
+    // Messages Claude asked to send (nothing goes out until approved here), the hub's connection status line and the
+    // inbox filter (all / unread / apple / whatsapp). approvals rows: id, title, service, when, requestedBy, text,
+    // replyText, error, busy, failed.
+    Q_PROPERTY(QVariantList approvals READ approvals NOTIFY approvalsChanged)
+    Q_PROPERTY(int approvalCount READ approvalCount NOTIFY approvalsChanged)
+    Q_PROPERTY(bool approvalsOpen READ approvalsOpen WRITE setApprovalsOpen NOTIFY approvalsOpenChanged)
+    Q_PROPERTY(QString statusText READ statusText NOTIFY statusChanged)
+    Q_PROPERTY(bool statusWarn READ statusWarn NOTIFY statusChanged)
+    Q_PROPERTY(QString inboxFilter READ inboxFilter WRITE setInboxFilter NOTIFY inboxFilterChanged)
+public:
+    QVariantList approvals() const { return m_approvalRows; }
+    int approvalCount() const;
+    bool approvalsOpen() const { return m_approvalsOpen; }
+    void setApprovalsOpen(bool open);
+    QString statusText() const { return m_statusText; }
+    bool statusWarn() const { return m_statusWarn; }
+    QString inboxFilter() const { return m_inboxFilter; }
+    void setInboxFilter(const QString &f);
+    Q_INVOKABLE void approveSend(int id);
+    Q_INVOKABLE void rejectSend(int id);   // also dismisses a failed one
+    Q_INVOKABLE void openHubSettings();    // the hub's web settings, in the browser
+private:
+    void initApprovals();                  // called once from the constructor
+    void refreshApprovals();               // also on the live "send-request" event
+    void refreshStatus();
+    void decideSend(int id, bool approve);
+    void rebuildApprovalRows();
+    QList<QVariantMap> applyInboxFilter(const QList<QVariantMap> &rows) const;
+    QList<QVariantMap> m_approvals;        // pending ones, as the hub returned them
+    QList<QVariantMap> m_approvalsFailed;  // approved but the hub could not send them: kept until dismissed
+    QHash<int, QString> m_approvalErrors;  // per request: why approve/reject did not work
+    QSet<int> m_approvalsBusy;
+    QHash<int, QVariantMap> m_approvalsInflight;  // being approved or rejected: stay listed even after the hub stops calling them pending
+    QVariantList m_approvalRows;
+    bool m_approvalsOpen = false;
+    QString m_statusText;
+    bool m_statusWarn = false;
+    QString m_inboxFilter = QStringLiteral("all");
+    QTimer m_approvalsTimer;
+    QTimer m_statusTimer;
+    QNetworkReply *m_statusReply = nullptr;
+
 signals:
     void originalReady(qint64 id, const QUrl &url);
     void serverChanged();
@@ -159,6 +202,11 @@ signals:
     void linkPreviewReady(qint64 messageId);
     void hubTimeZoneChanged();
     void scheduleResult(bool ok, const QString &error);
+    // ---- send approvals, status, filters (approvals.cpp) ----
+    void approvalsChanged();
+    void approvalsOpenChanged();
+    void statusChanged();
+    void inboxFilterChanged();
 
 private:
     Hub();

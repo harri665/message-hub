@@ -73,6 +73,8 @@ Rectangle {
             { label: "Automatic", detail: Theme.hasShell ? (Theme.shellGlass ? "MacShell: on" : "MacShell: off") : (Theme.autoGlass ? "On" : "Off"), checked: Theme.glassMode === "auto", action: set("auto") },
             { label: "On", checked: Theme.glassMode === "on", action: set("on") },
             { label: "Off", checked: Theme.glassMode === "off", action: set("off") },
+            { label: "Hub", header: true },
+            { label: "Hub Settings…", detail: "Opens in the browser", action: () => Hub.openHubSettings() },
             { label: "Messages " + Updater.version, header: true }
         ];
         if (Updater.enabled) items.push(side.updateItem());
@@ -110,10 +112,16 @@ Rectangle {
         onEscaped: side.forceActiveFocus()
     }
 
+    SidebarExtras {
+        id: extras
+        y: search.y + search.height + 8
+        width: parent.width
+    }
+
     ListView {
         id: list
         x: 0
-        y: search.y + search.height + 10
+        y: extras.y + extras.height + 10
         width: parent.width
         height: parent.height - y
         clip: true
@@ -185,7 +193,8 @@ Rectangle {
         Text {
             anchors.centerIn: parent
             visible: list.count === 0 && !side.searching
-            text: Hub.showArchived ? "No archived conversations" : "No conversations yet"
+            text: Hub.showArchived ? "No archived conversations" : Hub.inboxFilter === "unread" ? "You're all caught up."
+                : Hub.inboxFilter !== "all" ? "No conversations here." : "No conversations yet"
             color: Theme.text3
             font.pixelSize: 13
         }

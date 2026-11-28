@@ -63,6 +63,15 @@ New features go into the shared code; something that can only exist on one syste
 - **Muted chats stay quiet**: chats the hub marks as muted (WhatsApp chats muted on the phone, or chats muted in the
   web app) show a crossed-out bell and a grey unread dot, send no notifications, don't pop up in the Dynamic Island,
   and don't add to the unread count.
+- **Claude's send requests**: messages Claude asked to send through the hub's connector wait for you. A blue bar under
+  the search field ("Claude wants to send 2 messages") opens a list with who each is for, the service, the text, what it
+  replies to and who asked; **Send** sends it, **Don't send** drops it. A request the hub could not send stays listed with
+  its error until dismissed. The list refreshes on the live event, on sign-in and every minute.
+- **Connection status**: a quiet row under the filters says "Importing your iMessage history..." or what is wrong
+  ("iMessage is not connected", "WhatsApp is offline", ...), checked every 30 seconds and when the live feed
+  reconnects. Click it to open the hub's settings in the browser. The gear menu has **Hub Settings...** too, where BlueBubbles,
+  WhatsApp linking and Claude connector tokens are set up.
+- **Inbox filters**: All / Unread / iMessage / WhatsApp under the search field, like the web app's.
 - **Pinned messages**: right-click a message and choose Pin (or Unpin). Pinned messages get a small pin, and the chat
   shows a Pinned bar under its title; click the bar to step through the pins (it scrolls to each, loading older
   messages if needed) or choose Unpin. Pins live only in the hub, so every app sees them and nothing is sent to the
@@ -205,7 +214,7 @@ To keep notifications coming after login, start it in the background with your s
 [glass](#glass) option, also in the running instance (add `--background` to change it without showing the window).
 
 For development, with `MESSAGE_HUB_DEV=1` set on the running instance, `message-hub --dev "<command>"` drives it:
-`grab <file.png>`, `send <text>`, `filter <text>`, `open <tid>`, `reveal <message id>`, `schedule-ui <text>` (opens the schedule picker), `archive <tid>`, `unarchive <tid>`, `archived on|off`, `pin <id>`, `unpin <id>`, `older`, `top`, `list`, `close`, `settings` (opens the gear menu),
+`grab <file.png>`, `send <text>`, `filter <text>`, `inbox all|unread|apple|whatsapp`, `approvals [off]`, `approve <id>`, `reject <id>`, `open <tid>`, `reveal <message id>`, `schedule-ui <text>` (opens the schedule picker), `archive <tid>`, `unarchive <tid>`, `archived on|off`, `pin <id>`, `unpin <id>`, `older`, `top`, `list`, `close`, `settings` (opens the gear menu),
 `login <server> <password>`, `logout`, `resize <w>x<h>`, `scheme light|dark|system` (overrides the system's dark/light
 mode; Qt 6.8+). `QT_QPA_PLATFORM=offscreen` runs it without a window, and `MESSAGE_HUB_SOCKET` with
 `MESSAGE_HUB_PROFILE=<dir>` (session and cache in that folder, on Linux and Windows alike; `XDG_CONFIG_HOME` /
@@ -216,6 +225,7 @@ to judge the glass take a real screenshot.
 
 | Path | What it is |
 |---|---|
+| `src/approvals.cpp` | Hub methods for Claude's send requests, the connection status row and the inbox filter |
 | `src/hub.*` | Hub API client: sign-in, inbox, open chat, sending, search, live socket, attachments, notifications and file picker (through `Platform`) |
 | `src/theme.*` | Reads and watches the MacShell settings; the glass option (and what Automatic means) and the glass palette |
 | `src/listmodel.*` | List model that applies minimal changes, so lists keep their scroll position and recycle rows |
