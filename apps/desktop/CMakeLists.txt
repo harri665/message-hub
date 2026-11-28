@@ -78,11 +78,11 @@ qt_add_resources(message-hub "fonts"
   FILES fonts/OpenRunde-Regular.otf fonts/OpenRunde-Semibold.otf
 )
 
-# :emoji: shortcodes (emojibase-data, MIT; see data/LICENSE-emojibase.txt), compiled in so the app works offline.
+# :emoji: shortcodes (emojibase-data, MIT; see emoji/LICENSE-emojibase.txt), compiled in so the app works offline.
 qt_add_resources(message-hub "emoji"
   PREFIX "/emoji"
-  BASE data
-  FILES data/emoji-shortcodes.json
+  BASE emoji
+  FILES emoji/emoji-shortcodes.json
 )
 
 target_include_directories(message-hub PRIVATE src)

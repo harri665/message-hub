@@ -121,7 +121,7 @@ QVariantMap SearchAssist::complete(const QString &query, int caret) const {
 // ---------- emoji ----------
 
 const QList<SearchAssist::Emoji> &SearchAssist::emoji() const {
-    // Names and emoji from emojibase-data (MIT, data/LICENSE-emojibase.txt), most popular first, compiled in as a resource.
+    // Names and emoji from emojibase-data (MIT, emoji/LICENSE-emojibase.txt), most popular first, compiled in as a resource.
     static const QList<Emoji> all = [] {
         QList<Emoji> out;
         QFile f(":/emoji/emoji-shortcodes.json");

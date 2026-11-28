@@ -1,7 +1,7 @@
 // Builds the emoji shortcode list used by the web composer and the desktop composer from emojibase-data (MIT).
 //   npm i emojibase-data   (in any scratch folder)
 //   node tools/gen-emoji.mjs <path to node_modules/emojibase-data>
-// Writes apps/web/src/emoji/shortcodes.json and apps/desktop/data/emoji-shortcodes.json (the same file),
+// Writes apps/web/src/emoji/shortcodes.json and apps/desktop/emoji/emoji-shortcodes.json (the same file),
 // plus the license notice next to each. Output: [[emoji, name, ...aliases], ...], most popular first.
 // Names come from the "github" set (the names Discord and GitHub use), with the "iamcal" set (Slack's names) as aliases.
 import fs from 'node:fs';
@@ -37,7 +37,7 @@ const out = JSON.stringify(list.map((x) => [x.emoji, ...x.names]));
 
 const license = fs.readFileSync(path.join(src, 'LICENSE'), 'utf8');
 const notice = `Emoji shortcode data generated from emojibase-data ${version} (https://github.com/milesj/emojibase), used under the MIT license.\n\n${license}`;
-for (const dir of ['apps/web/src/emoji', 'apps/desktop/data']) {
+for (const dir of ['apps/web/src/emoji', 'apps/desktop/emoji']) {
   fs.mkdirSync(path.join(root, dir), { recursive: true });
   fs.writeFileSync(path.join(root, dir, dir.includes('web') ? 'shortcodes.json' : 'emoji-shortcodes.json'), out);
   fs.writeFileSync(path.join(root, dir, 'LICENSE-emojibase.txt'), notice);
