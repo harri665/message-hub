@@ -16,6 +16,22 @@ Threads show real photos in the web app and the desktop app, with initials as th
 
 The search box in the sidebar (Ctrl+K) finds people and messages. Every word has to appear and words match as prefixes, so `pizz` finds "pizza". Put words in quotes to find them together (`"see you"`) and put a minus in front of a word to leave it out (`dinner -work`). The iMessage and WhatsApp filters also narrow the message results. Click a result to open the conversation at that message. Inside a conversation, **Search** in the header searches just that conversation.
 
+Searches take Discord-style filters, with or without a space after the colon, and the box suggests them as you type (arrow keys pick, Enter or Tab completes):
+
+| Filter | Meaning |
+| --- | --- |
+| `from: mom`, `from: "Cole Writer"`, `from: 3035550102`, `from: me` | Sender: a name, address or phone number, matched on every service. `me` (and any names in `SELF_NAMES`, e.g. `harrison,harri665`) means messages you sent. |
+| `in: Ski Trip` | One conversation, by chat or person name (or its id, `p12`). |
+| `has: image` / `video` / `audio` (`sound`) / `file` / `link` / `sticker` / `attachment` | Repeat to require several: `has: image has: link`. |
+| `before: 2026-11-25`, `after: nov 25`, `during: 2026-11` | A day, a month, `yesterday`, `today`, `nov 25`, `11/25`. In the hub's `TIME_ZONE`. |
+| `is: unread`, `is: reply`, `service: whatsapp` | Unread incoming messages, replies, one service (`imessage`, `sms`, `rcs`, `whatsapp`). |
+
+Everything else is searched as words, and the words can be left out (`has: image in: Mom`). Unknown operators and values it can't read stay in the text. The MCP `search_messages` tool understands the same filters. There is no `mentions:` because mentions are not stored.
+
+## Emoji shortcodes
+
+In the composer (web and desktop), typing `:` and two letters (`:smi`) opens a list of matching emoji above the cursor. Arrow keys pick, Enter or Tab inserts, Esc closes, and a finished `:smile:` turns into the emoji straight away. It only starts at the beginning of the text or after a space, so `http://x:80` is left alone, and it does nothing inside backticks. The names are the ones GitHub, Discord and Slack use. The list comes from [emojibase-data](https://github.com/milesj/emojibase) (MIT, notice in `apps/web/src/emoji/LICENSE-emojibase.txt`), regenerated with `node tools/gen-emoji.mjs <path to node_modules/emojibase-data>` into both apps.
+
 ## Claude (MCP)
 
 The hub is also an MCP server, so Claude can search and read your messages. Claude can also ask to send a message, but it can never send one itself: every request waits in Message Hub until you choose **Send** or **Don't send**, and the hub only sends after that click. Requests expire after 24 hours, and at most 10 can wait at once.

@@ -30,6 +30,7 @@ qt_add_executable(message-hub
   src/hub.h src/hub.cpp
   src/theme.h src/theme.cpp
   src/listmodel.h src/listmodel.cpp
+  src/searchassist.h src/searchassist.cpp
   src/platform.h
   src/updater.h src/updater.cpp
   ${PLATFORM_SOURCES}
@@ -75,6 +76,13 @@ qt_add_resources(message-hub "fonts"
   PREFIX "/fonts"
   BASE fonts
   FILES fonts/OpenRunde-Regular.otf fonts/OpenRunde-Semibold.otf
+)
+
+# :emoji: shortcodes (emojibase-data, MIT; see data/LICENSE-emojibase.txt), compiled in so the app works offline.
+qt_add_resources(message-hub "emoji"
+  PREFIX "/emoji"
+  BASE data
+  FILES data/emoji-shortcodes.json
 )
 
 target_include_directories(message-hub PRIVATE src)

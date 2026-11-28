@@ -99,6 +99,7 @@ Rectangle {
 
     SearchField {
         id: search
+        z: 10  // its suggestions float over the list
         x: 12
         y: 48
         width: parent.width - 24
