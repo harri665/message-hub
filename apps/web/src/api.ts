@@ -30,6 +30,20 @@ export interface ThreadDetail {
   title: string;
   conversations: { id: number; network: Network; title: string | null; lastMessageAt: string | null; unread: number; lastService: Service }[];
   members: { id: number; network: Network; address: string; name: string | null }[];
+  /** Pinned messages (private to the hub), newest pin first. */
+  pins: Pin[];
+}
+
+export interface Pin {
+  id: number;
+  pinnedAt: string;
+  sentAt: string;
+  fromMe: boolean;
+  /** First 200 characters of the message, or null for an attachment with no text. */
+  text: string | null;
+  /** Who sent it; null for you. */
+  sender: string | null;
+  hasAttachment: boolean;
 }
 
 export interface Attachment { id: number; mime: string | null; filename: string | null; size: number | null; width: number | null; height: number | null }
@@ -47,6 +61,7 @@ export interface Message {
   read_at: string | null;
   edited_at: string | null;
   unsent: boolean;
+  pinned_at: string | null;
   status: 'sending' | 'sent' | 'failed';
   sender_person_id: number | null;
   sender_name: string | null;
@@ -134,6 +149,8 @@ export const api = {
   },
   markRead: (tid: string) => post(`/api/threads/${tid}/read`),
   mute: (tid: string, muted: boolean, hours: number | null = null) => post(`/api/threads/${tid}/mute`, { muted, hours }),
+  pin: (id: number) => post<{ ok: true; pinned: boolean }>(`/api/messages/${id}/pin`),
+  unpin: (id: number) => post<{ ok: true; pinned: boolean }>(`/api/messages/${id}/unpin`),
   send: (tid: string, body: { text: string; conversationId?: number; replyToId?: number }) => post(`/api/threads/${tid}/send`, body),
   sendFile: (tid: string, file: File, conversationId?: number, caption?: string) => {
     const form = new FormData();

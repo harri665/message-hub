@@ -16,6 +16,10 @@ Threads show real photos in the web app and the desktop app, with initials as th
 
 The search box in the sidebar (Ctrl+K) finds people and messages. Every word has to appear and words match as prefixes, so `pizz` finds "pizza". Put words in quotes to find them together (`"see you"`) and put a minus in front of a word to leave it out (`dinner -work`). The iMessage and WhatsApp filters also narrow the message results. Click a result to open the conversation at that message. Inside a conversation, **Search** in the header searches just that conversation.
 
+## Pinned messages
+
+Right-click (desktop) or use **Pin** on a message (web) to pin it. Pins are private to the hub: nothing is sent to the phone, iMessage or WhatsApp, and other people never see them (iOS 26 message pins never reach the Mac VM, and pinning in WhatsApp would post a notice to the chat, so the hub keeps its own). A pin is a `pinned_at` timestamp on the message (migration 006). `POST /api/messages/:id/pin` and `/unpin` set it (signed-in sessions only) and send a live `message-updated` event, so other open clients update. `GET /api/threads/:tid` lists the thread's `pins`, newest pin first (`id`, `text` preview, `sender`, `sentAt`, `fromMe`, `hasAttachment`). Unsent messages drop out of the pins. A thread with pins shows a Pinned bar under the header: click it to step through the pins (older pages are loaded if needed, and the message is highlighted), or Unpin from it. Claude's `read_conversation` marks pinned messages with "(pinned)" and cannot change pins.
+
 ## Claude (MCP)
 
 The hub is also an MCP server, so Claude can search and read your messages. Claude can also ask to send a message, but it can never send one itself: every request waits in Message Hub until you choose **Send** or **Don't send**, and the hub only sends after that click. Requests expire after 24 hours, and at most 10 can wait at once.

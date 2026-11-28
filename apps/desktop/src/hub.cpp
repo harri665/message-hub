@@ -155,7 +155,7 @@ Hub::Hub()
       m_resultModel({"key", "tid", "title", "initials", "photo", "time", "preview", "unread", "service", "isGroup", "muted"}, "key"),
       m_messageModel({"key", "id", "fromMe", "kind", "html", "body", "jumbo", "time", "service", "senderName", "showName",
                       "separator", "tail", "statusText", "failed", "pending", "attachments", "reactions", "replyName",
-                      "replyBody", "unsent", "edited"},
+                      "replyBody", "unsent", "edited", "pinned"},
                      "key") {
     m_nam.setTransferTimeout(60000);
     m_nam.setAutoDeleteReplies(false);
@@ -165,6 +165,9 @@ Hub::Hub()
     m_messagesTimer.setSingleShot(true);
     m_messagesTimer.setInterval(150);
     connect(&m_messagesTimer, &QTimer::timeout, this, &Hub::refreshCurrent);
+    m_detailTimer.setSingleShot(true);
+    m_detailTimer.setInterval(150);
+    connect(&m_detailTimer, &QTimer::timeout, this, &Hub::refreshDetail);
     m_searchTimer.setSingleShot(true);
     m_searchTimer.setInterval(250);
     connect(&m_searchTimer, &QTimer::timeout, this, [this] { search(m_filter); });
@@ -724,10 +727,54 @@ void Hub::applyMessages() {
             {"replyBody", oneLine(m.value("reply_to_body").toString(), 120)},
             {"unsent", m.value("unsent").toBool()},
             {"edited", !m.value("edited_at").toString().isEmpty()},
+            {"pinned", !pending && !m.value("unsent").toBool() && !m.value("pinned_at").toString().isEmpty()},
         };
         rows << row;
     }
     m_messageModel.setRows(rows);
+    if (m_revealId) tryReveal();
+}
+
+void Hub::refreshDetail() {
+    if (m_tid.isEmpty() || !signedIn()) return;
+    const int gen = m_generation;
+    handle(call("GET", "/api/threads/" + m_tid), [this, gen](const QJsonDocument &doc) {
+        if (gen != m_generation) return;
+        m_detail = doc.object().toVariantMap();
+        emit currentChanged();
+        saveThreadCache(m_tid);
+    });
+}
+
+void Hub::pinMessage(qint64 id, bool pin) {
+    if (m_tid.isEmpty()) return;
+    // Show it at once; the hub's answer (and the live event for other apps) settles the real state.
+    for (auto &m : m_msgs)
+        if (m.value("id").toLongLong() == id) m["pinned_at"] = pin ? isoNow() : QString();
+    applyMessages();
+    const QString path = QStringLiteral("/api/messages/%1/%2").arg(id).arg(pin ? "pin" : "unpin");
+    auto done = [this](const QJsonDocument &) { refreshCurrent(); refreshDetail(); };
+    handle(call("POST", path, "{}"), done, [this](int, const QString &e) { setError(e); refreshCurrent(); });
+}
+
+// Scroll target: wait for the message to be loaded (paging back through older messages), then tell the view its row.
+void Hub::revealMessage(qint64 id) {
+    m_revealId = id;
+    tryReveal();
+}
+
+void Hub::tryReveal() {
+    const auto &rows = m_messageModel.rows();
+    const QString key = "m" + QString::number(m_revealId);
+    for (int i = 0; i < rows.size(); ++i)
+        if (rows.at(i).value("key").toString() == key) {
+            const qint64 id = m_revealId;
+            m_revealId = 0;
+            emit revealRequested(i, id);
+            return;
+        }
+    if (m_hasOlder && !m_loadingOlder) loadOlder();
+    else if (!m_hasOlder && !m_loadingOlder) m_revealId = 0;  // not in this conversation any more
 }
 
 void Hub::setWindowActive(bool a) {
@@ -1080,7 +1127,7 @@ void Hub::onLive(const QString &text) {
             if (m_islandClients == 0) notify(preview);  // the island shows it instead
         }
     } else if (type == "message-updated") {
-        if (inCurrent) m_messagesTimer.start();
+        if (inCurrent) { m_messagesTimer.start(); m_detailTimer.start(); }
         scheduleThreads(3000);
     } else if (type == "conversation-updated") {
         scheduleThreads(1500);

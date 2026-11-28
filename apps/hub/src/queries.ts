@@ -10,7 +10,7 @@ export interface ConvRow {
 
 export const MESSAGE_COLUMNS = `
   m.id, m.conversation_id, m.service, m.from_me, m.kind, m.body, m.sent_at, m.delivered_at, m.read_at, m.edited_at,
-  m.unsent, m.status,
+  m.unsent, m.status, m.pinned_at,
   sh.person_id as sender_person_id,
   coalesce(spn.name, spa.address, sh.address) as sender_name,
   coalesce((select json_agg(json_build_object('id', a.id, 'mime', a.mime, 'filename', a.filename, 'size', a.size,
@@ -172,6 +172,22 @@ async function loadThreadMessages(convIds: number[], p: MessagePage) {
   if (p.after) return page('and m.sent_at > $2', 'asc', [p.after], limit);
   const rows = await page('and ($2::timestamptz is null or m.sent_at < $2)', 'desc', [p.before ?? null], limit);
   return rows.reverse();
+}
+
+/** The pinned messages of a thread (all its conversations), newest pin first. Unsent messages drop out. */
+export function threadPins(convIds: number[]) {
+  return q(
+    `select m.id, m.conversation_id, m.pinned_at, m.sent_at, m.from_me, left(m.body, 200) as body,
+            coalesce(spn.name, spa.address, sh.address) as sender_name,
+            exists(select 1 from attachment a where a.message_id = m.id) as has_attachment
+     from message m
+     left join handle sh on sh.id = m.sender_handle_id
+     left join person_name spn on spn.person_id = sh.person_id
+     left join person_address spa on spa.person_id = sh.person_id
+     where m.conversation_id = any($1) and m.pinned_at is not null and not m.unsent
+     order by m.pinned_at desc, m.id desc`,
+    [convIds],
+  );
 }
 
 // ---------- search ----------

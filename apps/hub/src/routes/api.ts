@@ -12,7 +12,7 @@ import { bus, emitLive, type LiveEvent } from '../store.js';
 import { cached } from '../cache.js';
 import { AVATAR_SIZES, resizedAvatar, THREAD_AVATAR_SQL, threadAvatar } from '../avatars.js';
 import { approveSendRequest, listSendRequests, rejectSendRequest, sendText } from '../outbox.js';
-import { listThreads, searchMessages, threadConversations, threadMessages, type SearchFilter } from '../queries.js';
+import { listThreads, searchMessages, threadConversations, threadMessages, threadPins, type SearchFilter } from '../queries.js';
 
 const THUMB_WIDTHS = new Set([320, 640, 1280]);
 /** Image formats we make resized copies of. Others (SVG, TIFF, ...) are never decoded on the server. */
@@ -171,6 +171,10 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
           lastService: svc.get(c.id) ?? (c.network === 'whatsapp' ? 'whatsapp' : 'imessage'),
         })),
         members,
+        pins: (await threadPins(convs.map((c) => c.id))).map((p) => ({
+          id: p.id, pinnedAt: p.pinned_at, sentAt: p.sent_at, fromMe: p.from_me, text: p.body,
+          sender: p.from_me ? null : p.sender_name, hasAttachment: p.has_attachment,
+        })),
       };
     };
 
@@ -205,6 +209,24 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
       }
       return { ok: true, muted, until };
     });
+
+    // Pin or unpin one message. Pins live only in the hub: nothing is sent to iMessage or WhatsApp.
+    for (const [action, pinned] of [['pin', true], ['unpin', false]] as const) {
+      r.post<{ Params: { id: string } }>(`/api/messages/:id/${action}`, async (req, reply) => {
+        const id = Number(req.params.id);
+        if (!Number.isSafeInteger(id)) return reply.code(404).send({ error: 'message not found' });
+        const row = await q1<{ conversation_id: number; pinned_at: string | null }>(
+          // Pinning again keeps the original pin time; unsent messages can't be pinned.
+          pinned
+            ? "update message set pinned_at = coalesce(pinned_at, now()) where id = $1 and not unsent and kind = 'text' returning conversation_id, pinned_at"
+            : 'update message set pinned_at = null where id = $1 returning conversation_id, pinned_at',
+          [id],
+        );
+        if (!row) return reply.code(404).send({ error: 'message not found' });
+        emitLive({ type: 'message-updated', conversationId: row.conversation_id, messageId: id });
+        return { ok: true, pinned: !!row.pinned_at, pinnedAt: row.pinned_at };
+      });
+    }
 
     r.post<{ Params: { tid: string } }>('/api/threads/:tid/read', async (req) => {
       const convs = await threadConversations(req.params.tid);

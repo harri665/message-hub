@@ -72,6 +72,9 @@ public:
     Q_INVOKABLE void pickFile(int conversationId);
     Q_INVOKABLE void sendFiles(const QList<QUrl> &files, int conversationId);
     Q_INVOKABLE void openAttachment(qint64 id, const QString &filename);
+    Q_INVOKABLE void pinMessage(qint64 id, bool pin);
+    // Bring a message into view (loading older pages if it isn't loaded yet); revealRequested() reports its row.
+    Q_INVOKABLE void revealMessage(qint64 id);
     Q_INVOKABLE void copyText(const QString &text);
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void openLink(const QString &url);
@@ -110,6 +113,7 @@ signals:
     void showRequested(const QString &tid);
     void inboxChanged();
     void incoming(const QVariantMap &message);  // a new message from someone else
+    void revealRequested(int row, qint64 id);
     void sendResult(const QString &tid, bool ok, const QString &error);
 
 private:
@@ -129,6 +133,8 @@ private:
     void rebuildThreadModel();
     QVariantMap decorateThread(QVariantMap t) const;
     void refreshCurrent();
+    void refreshDetail();
+    void tryReveal();
     void applyMessages();
     void markRead(const QString &tid);
     qint64 newestId() const;
@@ -162,6 +168,8 @@ private:
     QTimer m_threadsTimer;   // coalesces inbox refreshes
     QTimer m_messagesTimer;  // coalesces open-thread refreshes
     QTimer m_searchTimer;
+    QTimer m_detailTimer;    // coalesces open-thread detail refreshes (pins)
+    qint64 m_revealId = 0;
     QTimer m_clock;          // keeps "Yesterday" / weekday labels right
     QNetworkReply *m_threadsReply = nullptr;
 

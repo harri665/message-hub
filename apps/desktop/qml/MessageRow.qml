@@ -27,6 +27,10 @@ Item {
     required property string replyBody
     required property bool unsent
     required property bool edited
+    required property bool pinned
+    property real flashId: 0
+    readonly property bool flash: flashId !== 0 && Number(id) === flashId
+    signal pinRequested(var id, bool pin)
     property bool group: false
 
     signal replyRequested(var id, string name, string body)
@@ -44,6 +48,8 @@ Item {
         const entries = [];
         if (!row.pending && row.kind !== "system")
             entries.push({ label: "Reply", action: () => row.replyRequested(row.id, row.fromMe ? "You" : row.senderName, row.body) });
+        if (!row.pending && !row.unsent && row.kind === "text")
+            entries.push({ label: row.pinned ? "Unpin" : "Pin", action: () => row.pinRequested(row.id, !row.pinned) });
         if (row.body) entries.push({ label: "Copy", action: () => Hub.copyText(row.body) });
         for (const a of row.attachments)
             entries.push({ label: "Open " + (a.filename || "Attachment"), action: () => Hub.openAttachment(a.id, a.filename || "") });
@@ -226,6 +232,22 @@ Item {
                     radius: 18
                     color: row.jumbo ? "transparent" : (row.fromMe ? row.svcColor : Theme.bubbleIn)
                     opacity: row.pending && !row.failed ? 0.7 : 1
+                    border.width: row.flash ? 2 : 0
+                    border.color: Theme.accent
+                    Behavior on border.width { NumberAnimation { duration: 250 } }
+
+                    Rectangle {
+                        visible: row.pinned
+                        width: 18
+                        height: 18
+                        radius: 9
+                        x: row.fromMe ? -6 : parent.width - 12
+                        y: parent.height - 12
+                        color: Theme.dark ? "#48484A" : "#DCDCE0"
+                        border.width: 2
+                        border.color: Theme.base
+                        Glyph { anchors.centerIn: parent; name: "pin"; width: 10; height: 10; color: Theme.accent; stroke: 1.2 }
+                    }
 
                     Column {
                         id: inner

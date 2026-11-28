@@ -52,6 +52,7 @@ export function useLive(enabled: boolean, openTid: string | null) {
         retry = 1000;
         invalidate(['threads']);
         invalidate(['messages']);
+        invalidate(['thread']);
         invalidate(['send-requests']);
       };
       ws.onmessage = (e) => {
@@ -64,6 +65,7 @@ export function useLive(enabled: boolean, openTid: string | null) {
             break;
           case 'message-updated':
             invalidate(['messages']);
+            invalidate(['thread']);
             invalidate(['threads']);
             break;
           case 'conversation-updated':
@@ -80,6 +82,7 @@ export function useLive(enabled: boolean, openTid: string | null) {
           case 'refresh':
             invalidate(['threads']);
             invalidate(['messages']);
+            invalidate(['thread']);
             invalidate(['status']);
             break;
         }

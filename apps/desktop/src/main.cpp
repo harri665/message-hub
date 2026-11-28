@@ -172,6 +172,10 @@ void App::dev(const QString &cmd) {
     else if (verb == "send") Hub::instance()->send(arg, 0, 0);
     else if (verb == "filter") Hub::instance()->setFilter(arg);
     else if (verb == "older") Hub::instance()->loadOlder();
+    else if (verb == "open") Hub::instance()->openThread(arg);
+    else if (verb == "reveal") Hub::instance()->revealMessage(arg.toLongLong());
+    else if (verb == "pin") Hub::instance()->pinMessage(arg.toLongLong(), true);
+    else if (verb == "unpin") Hub::instance()->pinMessage(arg.toLongLong(), false);
     else if (verb == "close") closeWindow();
     else if (verb == "login") Hub::instance()->login(arg.section(' ', 0, 0), arg.section(' ', 1));
     else if (verb == "logout") Hub::instance()->logout();
