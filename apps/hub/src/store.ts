@@ -50,6 +50,8 @@ export type LiveEvent =
   | { type: 'conversation-updated'; conversationId: number }
   | { type: 'status'; source: 'bluebubbles' | 'whatsapp' }
   | { type: 'send-request' }
+  /** Scheduled messages in a thread changed (created, edited, sent, failed or cancelled). */
+  | { type: 'scheduled'; tid: string }
   /** Someone started or stopped typing. sender is a handle address in group chats, null in one-to-one chats. */
   | { type: 'typing'; conversationId: number; typing: boolean; sender: { network: Network; address: string } | null; audio?: boolean };
 
