@@ -1020,3 +1020,49 @@ video.att-media { object-fit: contain; }
 .sched-menu button.danger { color: var(--danger); }
 .sched-count { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; border: 0; background: none; padding: 0; font: inherit; color: var(--accent); font-weight: 600; }
 .sched-count:hover { text-decoration: underline; }
+
+/* ---------- AI features ---------- */
+.ai-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-right: 8px; }
+.ai-head h2 { padding: 4px 10px; }
+.ai-snippet { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ai-answer {
+  margin: 4px 8px 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.ai-answer > p { margin: 0 0 6px; }
+.ai-answer details { margin-top: 4px; }
+.ai-answer summary { cursor: pointer; color: var(--sub); font-size: 12px; }
+.ai-meta { color: var(--sub); font-size: 11.5px; margin: 6px 0 0 !important; }
+.cite {
+  border: 0;
+  padding: 0 5px;
+  margin: 0 1px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 1px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent);
+  cursor: pointer;
+}
+.suggestions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 2px 2px 8px; }
+.suggestion-chip {
+  max-width: 100%;
+  border: 0.5px solid var(--sep);
+  border-radius: 16px;
+  padding: 6px 12px;
+  background: var(--fill);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.suggestion-chip:hover { background: var(--fill-strong); }
+.ai-meter { height: 6px; border-radius: 3px; background: var(--fill-strong); overflow: hidden; }
+.ai-meter span { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.ai-meter span.high { background: #ff9f0a; }

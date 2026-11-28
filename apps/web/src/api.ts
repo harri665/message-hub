@@ -38,7 +38,11 @@ export interface ThreadDetail {
   pinned: boolean;
 }
 
-export interface Attachment { id: number; mime: string | null; filename: string | null; size: number | null; width: number | null; height: number | null }
+export interface Attachment {
+  id: number; mime: string | null; filename: string | null; size: number | null; width: number | null; height: number | null;
+  /** What the AI saw in a photo (when AI features are on). */
+  description?: string | null;
+}
 export interface Reaction { emoji: string; fromMe: boolean; name: string | null }
 
 export interface Message {
@@ -86,6 +90,27 @@ export interface SendRequest {
 }
 
 export type SearchService = 'apple' | 'whatsapp' | '';
+
+/** AI features (Cloudflare Workers AI). Off unless the hub has CF_ACCOUNT_ID and CF_API_TOKEN. */
+export type AiStatus = { enabled: false } | {
+  enabled: true;
+  /** Neurons spent today, of the daily limit; the count resets at resetsAt (00:00 UTC). */
+  usedToday: number;
+  limit: number;
+  resetsAt: string;
+  usage: { feature: string; model: string; requests: number; neurons: number }[];
+  photos: { described: number; pending: number; skipped: number };
+  search: { chunks: number; embedded: number; waitingChunks: number; waitingMessages: number };
+  models: Record<'answer' | 'reply' | 'vision' | 'fallback' | 'embed', string>;
+};
+
+/** A few consecutive messages that match a search by meaning. */
+export interface MeaningHit {
+  chunkId: number; tid: string; threadTitle: string; isGroup: boolean; messageId: number;
+  firstSentAt: string; lastSentAt: string; text: string; score: number;
+}
+
+export interface AiAnswer { answer: string; sources: (MeaningHit & { n: number })[]; model: string | null }
 
 export interface ContactMatch {
   personId: number;
@@ -199,6 +224,11 @@ export const api = {
     if (opts.service) qs.set('service', opts.service);
     return request<SearchResult[]>(`/api/search?${qs}`);
   },
+  aiStatus: () => request<AiStatus>('/api/ai/status'),
+  aiSearch: (q: string, tid?: string) =>
+    request<MeaningHit[]>(`/api/ai/search?${new URLSearchParams({ q, ...(tid ? { tid } : {}) })}`),
+  aiAsk: (q: string, tid?: string) => post<AiAnswer>('/api/ai/ask', { q, tid }),
+  suggestReplies: (tid: string) => post<{ suggestions: string[]; model: string }>(`/api/threads/${tid}/suggest-replies`),
   mcpTokens: () => request<McpToken[]>('/api/mcp/tokens'),
   createMcpToken: (name: string) => post<{ id: string; name: string; token: string }>('/api/mcp/tokens', { name }),
   deleteMcpToken: (id: string) => request<{ ok: true }>(`/api/mcp/tokens/${id}`, { method: 'DELETE' }),

@@ -49,8 +49,15 @@ function ImageAttachment({ a, src, box, onOpenImage }: {
     );
   }
   return (
-    <button type="button" className="att-media" style={box} onClick={() => onOpenImage(url)} aria-label={`Open ${a.filename ?? 'photo'}`}>
-      <img src={thumb} alt={a.filename ?? 'Image'} loading="lazy" decoding="async" onError={() => setFailed(true)} />
+    <button
+      type="button"
+      className="att-media"
+      style={box}
+      onClick={() => onOpenImage(url)}
+      aria-label={`Open ${a.description ? `photo: ${a.description}` : (a.filename ?? 'photo')}`}
+      title={a.description ? `AI description: ${a.description}` : undefined}
+    >
+      <img src={thumb} alt={a.description ?? a.filename ?? 'Image'} loading="lazy" decoding="async" onError={() => setFailed(true)} />
     </button>
   );
 }

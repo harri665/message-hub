@@ -29,4 +29,22 @@ export const config = {
     url: (process.env.WA_CONNECTOR_URL ?? '').replace(/\/+$/, ''),
     secret: process.env.INTERNAL_SECRET ?? '',
   },
+  /** Cloudflare Workers AI (see ai/). Off unless both the account id and the token are set. */
+  ai: {
+    accountId: process.env.CF_ACCOUNT_ID ?? '',
+    token: process.env.CF_API_TOKEN ?? '',
+    /** Neurons the hub may spend per UTC day. Cloudflare's free allowance is 10,000. */
+    dailyNeurons: Number(process.env.AI_DAILY_NEURONS) || 10_000,
+    /** Overrides the API base (for AI Gateway); defaults to the Workers AI REST API for the account. */
+    baseUrl: (process.env.AI_BASE_URL ?? '').replace(/\/+$/, ''),
+    models: {
+      answer: process.env.AI_MODEL_ANSWER || '@cf/moonshotai/kimi-k2.5',
+      reply: process.env.AI_MODEL_REPLY || '@cf/openai/gpt-oss-120b',
+      vision: process.env.AI_MODEL_VISION || '@cf/meta/llama-4-scout-17b-16e-instruct',
+      fallback: process.env.AI_MODEL_FALLBACK || '@cf/google/gemma-4-26b-a4b-it',
+      embed: '@cf/baai/bge-m3',
+    },
+  },
 };
+
+export const aiEnabled = () => !!(config.ai.accountId && config.ai.token);

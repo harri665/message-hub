@@ -4,6 +4,8 @@ import { api, SERVICE_LABEL, type MessagePage, type ThreadSummary } from '../api
 import { listTime, serviceClass } from '../format.ts';
 import { Avatar } from './Avatar.tsx';
 import { Highlight } from './Highlight.tsx';
+import { AiSearch } from './AiSearch.tsx';
+import { useAiEnabled } from '../aiStatus.ts';
 import { useDrafts, useTyping } from '../stores.ts';
 import { useLongPress } from '../longPress.ts';
 import { allOperators, complete, freeText, type Completion, type Suggestion } from '../searchSuggest.ts';
@@ -105,6 +107,7 @@ export function Sidebar({ activeTid, composing, onOpen, onNew, onSettings }: {
     });
   };
   const status = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 30_000 });
+  const aiEnabled = useAiEnabled();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const searchRef = useRef<HTMLInputElement>(null);
@@ -325,6 +328,7 @@ export function Sidebar({ activeTid, composing, onOpen, onNew, onSettings }: {
             )}
           </section>
         )}
+        {aiEnabled && deferred.length >= 3 && <AiSearch query={deferred} onOpen={onOpen} />}
       </nav>
       {menu && (
         <div className="mute-menu glass ctx-menu" role="menu" style={{ left: menu.x, top: menu.y }}>

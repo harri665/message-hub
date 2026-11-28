@@ -9,6 +9,7 @@ import { caretOffset, findComplete, findTrigger, searchEmoji } from '../emoji/em
 import { fileSize, serviceClass } from '../format.ts';
 import { getDraft, setDraft } from '../stores.ts';
 import { ScheduleDialog } from './ScheduleDialog.tsx';
+import { useAiEnabled } from '../aiStatus.ts';
 import type { Pending } from './ThreadView.tsx';
 
 interface Props {
@@ -33,6 +34,16 @@ export const Composer = forwardRef<HTMLFormElement, Props>(function Composer({ t
   const qc = useQueryClient();
   // Default to the conversation with the most recent activity; a reply goes back where the original came from.
   const [convId, setConvId] = useState<number>(thread.conversations[0]?.id);
+  // Reply suggestions from the AI: they only fill the box, nothing is sent until Send is pressed.
+  const aiEnabled = useAiEnabled();
+  const [suggestions, setSuggestions] = useState<string[] | null>(null);
+  const [suggesting, setSuggesting] = useState(false);
+  const suggestFor = useRef(tid);
+  useEffect(() => {
+    suggestFor.current = tid;
+    setSuggestions(null);
+    setSuggesting(false);
+  }, [tid]);
   const fileRef = useRef<HTMLInputElement>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
@@ -200,6 +211,7 @@ export const Composer = forwardRef<HTMLFormElement, Props>(function Composer({ t
     setText('');
     setDraft(tid, '');
     setNotice(null);
+    setSuggestions(null);
     onClearReply();
     areaRef.current?.focus();
   };
@@ -219,6 +231,27 @@ export const Composer = forwardRef<HTMLFormElement, Props>(function Composer({ t
     onClearReply();
     setScheduling(false);
     qc.invalidateQueries({ queryKey: ['scheduled'] });
+    areaRef.current?.focus();
+  };
+
+  const suggest = async () => {
+    const forTid = tid;
+    setNotice(null);
+    setSuggesting(true);
+    try {
+      const r = await api.suggestReplies(forTid);
+      if (suggestFor.current === forTid) setSuggestions(r.suggestions);
+    } catch (e) {
+      if (suggestFor.current === forTid) setNotice(e instanceof Error ? e.message : 'Could not suggest replies.');
+    } finally {
+      if (suggestFor.current === forTid) setSuggesting(false);
+    }
+  };
+  const pickSuggestion = (s: string) => {
+    changeText(s);
+    nextCaret.current = s.length;
+    setCaret(s.length);
+    setSuggestions(null);
     areaRef.current?.focus();
   };
 
@@ -336,6 +369,16 @@ export const Composer = forwardRef<HTMLFormElement, Props>(function Composer({ t
         </ul>
       )}
       {notice && <p className="composer-notice" role="status">{notice}</p>}
+      {suggestions && (
+        <div className="suggestions" role="group" aria-label="Suggested replies">
+          {suggestions.map((s) => (
+            <button key={s} type="button" className="suggestion-chip" onClick={() => pickSuggestion(s)} title="Put this in the message box">
+              {s}
+            </button>
+          ))}
+          <button type="button" className="link-btn" onClick={() => setSuggestions(null)}>Hide</button>
+        </div>
+      )}
       {recorder.state !== 'idle' ? (
         <div className="composer-row recording">
           <button type="button" className="pill-btn" onClick={cancelRecording}>Cancel</button>
@@ -369,6 +412,11 @@ export const Composer = forwardRef<HTMLFormElement, Props>(function Composer({ t
             </div>
           )}
           <button type="button" className="pill-btn" onClick={() => fileRef.current?.click()}>Attach</button>
+          {aiEnabled && (
+            <button type="button" className="pill-btn" onClick={suggest} disabled={suggesting} title="Suggest replies with AI (you choose what to send)">
+              {suggesting ? 'Thinking' : 'Suggest'}
+            </button>
+          )}
           <input
             ref={fileRef}
             type="file"

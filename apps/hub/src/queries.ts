@@ -17,7 +17,7 @@ export const MESSAGE_COLUMNS = `
   sh.person_id as sender_person_id,
   coalesce(spn.name, spa.address, sh.address) as sender_name,
   coalesce((select json_agg(json_build_object('id', a.id, 'mime', a.mime, 'filename', a.filename, 'size', a.size,
-                                              'width', a.width, 'height', a.height) order by a.id)
+                                              'width', a.width, 'height', a.height, 'description', a.description) order by a.id)
             from attachment a where a.message_id = m.id), '[]') as attachments,
   coalesce((select json_agg(json_build_object('emoji', r.emoji, 'fromMe', r.sender_key = 'me',
                                               'name', coalesce(rpn.name, rh.address)) order by r.created_at)

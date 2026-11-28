@@ -84,6 +84,19 @@ The hub is also an MCP server, so Claude can search and read your messages. Clau
 
 Tools: `search_messages`, `list_conversations` and `read_conversation` read your messages. `request_send_message` queues a message for your approval (nothing is sent yet), and `get_send_request` and `list_send_requests` show what you decided. Approving is only possible from the signed-in web app, never with an MCP token. Set `TIME_ZONE` in `.env` so Claude sees message times in your time zone. Revoke a token in Settings at any time.
 
+## AI features
+
+Optional, and free within Cloudflare Workers AI's daily allowance of 10,000 Neurons (reset at 00:00 UTC). Message text and photos are sent to Cloudflare to be processed. To turn them on, create a Cloudflare API token with the Workers AI Read and Edit permissions and set `CF_ACCOUNT_ID` and `CF_API_TOKEN` in the stack's environment. Settings, then **AI features**, shows how much of today's allowance is used and how far the background work has got.
+
+- **Photo descriptions.** Every image attachment gets a sentence or two from a vision model (stickers and tiny images are skipped). They become the photo's alt text and tooltip, are searchable by meaning, and show in Claude's `read_conversation`. New photos (last 3 days) are described within seconds with Llama 4 Scout. Older photos are the backlog: Gemma 4 works through them only while less than 70% of the day's allowance is used. Describing an old photo downloads it from the Mac or WhatsApp onto the attachments volume, like opening it would.
+- **Search by meaning.** Messages are grouped into short stretches of conversation (a new one starts after a 30-minute pause), embedded with bge-m3 and stored in Postgres with pgvector. A chat's newest messages are indexed once the conversation has paused for 30 minutes. In the web app, a search of 3 or more characters also shows a **By meaning** section, and date filters (`after:`, `before:`, `during:`) apply to it. Claude gets the same search as the `search_by_meaning` MCP tool.
+- **Ask AI.** In the By meaning section, **Ask AI** answers the search as a question from the best matching stretches, with numbered citations that open the conversation there. It uses Kimi K2.5, then Nemotron 3 120B, then Gemma 4, whichever is available first.
+- **Suggest.** In a conversation, **Suggest** writes three replies in your style with gpt-oss-120b. Clicking one only puts it in the message box; nothing is sent until you press Send.
+
+Spending order: answers and suggestions may use the whole allowance, but switch to the cheaper Gemma 4 once 80% is used. New photos and messages stop at 90%, and the backlog at 70%. The hub counts Neurons from the token usage Cloudflare reports (`ai_usage` table) and stops for the day if Cloudflare says the allowance is gone. A model that is unavailable (paid-only, removed or busy) is skipped for the next one in its list. Models can be changed with `AI_MODEL_ANSWER`, `AI_MODEL_REPLY`, `AI_MODEL_VISION` and `AI_MODEL_FALLBACK`, and `AI_DAILY_NEURONS` lowers the daily limit.
+
+The database image is `postgres:17-alpine` with pgvector built in (`services/db/Dockerfile`), so the existing data directory carries over. Migration 010 adds the `vector` extension, the `search_chunk` table, `message.search_chunk_id`, the attachment description columns and `ai_usage`. The code is in `apps/hub/src/ai/`.
+
 Runs as a Portainer stack on TrueNAS and redeploys on every push to `main`.
 
 - [SETUP.md](SETUP.md): getting the Mac VM, the stack and WhatsApp running

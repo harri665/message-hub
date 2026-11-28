@@ -7,8 +7,9 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { requireSession } from './auth.js';
-import { config } from './config.js';
+import { aiEnabled, config } from './config.js';
 import { kvGet, kvSet, q } from './db.js';
+import { searchByMeaning } from './ai/searchindex.js';
 import { createSendRequest, getSendRequest, listSendRequests, MAX_TEXT, type SendRequest } from './outbox.js';
 import { listThreads, searchMessages, threadConversations, threadMessages } from './queries.js';
 
@@ -68,8 +69,11 @@ function messageLine(m: any, opts: { thread?: boolean } = {}) {
   parts.push(`${SERVICE[m.service] ?? m.service}`);
   let text = m.unsent ? '(unsent)' : (m.body ?? '');
   if (m.kind === 'system') text = `(${text})`;
-  const atts = (m.attachments ?? []) as { filename: string | null; mime: string | null }[];
-  if (atts.length) text += `${text ? ' ' : ''}[${atts.map((a) => `${a.mime?.split('/')[0] ?? 'file'}: ${a.filename ?? 'attachment'}`).join(', ')}]`;
+  const atts = (m.attachments ?? []) as { filename: string | null; mime: string | null; description?: string | null }[];
+  if (atts.length) {
+    const desc = (a: (typeof atts)[number]) => (a.description ? ` (AI description: ${clip(a.description, 300)})` : '');
+    text += `${text ? ' ' : ''}[${atts.map((a) => `${a.mime?.split('/')[0] ?? 'file'}: ${a.filename ?? 'attachment'}${desc(a)}`).join(', ')}]`;
+  }
   const reacts = (m.reactions ?? []) as { emoji: string; fromMe: boolean; name: string | null }[];
   if (reacts.length) text += ` (reactions: ${reacts.map((r) => `${r.emoji} ${r.fromMe ? 'Me' : (r.name ?? '?')}`).join(', ')})`;
   if (m.reply_to_id) text = `(replying to "${clip(m.reply_to_body, 60)}") ${text}`;
@@ -146,6 +150,38 @@ function buildServer(requestedBy: string) {
       return textResult(`${rows.length} matches, newest first. ${UNTRUSTED}\n${rows.map((m) => messageLine(m, { thread: true })).join('\n')}${more}`);
     },
   );
+
+  if (aiEnabled()) {
+    server.registerTool(
+      'search_by_meaning',
+      {
+        title: 'Search messages by meaning',
+        description:
+          'Finds stretches of conversation about a topic even when they use different words, e.g. "plans for the cabin trip" or ' +
+          '"photo of a dog at the beach" (photos are searchable through AI descriptions). Best match first. Each result is a few ' +
+          'consecutive messages; pass its message id to read_conversation as around_message_id for more context. ' +
+          'Use search_messages instead for exact words, names or filters.',
+        inputSchema: {
+          query: z.string().min(2).describe('What to look for, in plain words'),
+          conversation: z.string().regex(/^[pc]\d+$/).optional().describe('Limit to one conversation id, e.g. p12'),
+          limit: z.number().int().min(1).max(25).default(10),
+        },
+        annotations: { readOnlyHint: true, openWorldHint: false },
+      },
+      async (a) => {
+        try {
+          const convIds = a.conversation ? (await threadConversations(a.conversation)).map((c) => c.id) : undefined;
+          const hits = await searchByMeaning({ text: a.query, convIds, limit: a.limit });
+          if (!hits.length) return textResult(`Nothing found for "${a.query}". Recent messages may not be indexed yet.`);
+          const lines = hits.map((h) =>
+            `[${h.messageId}] ${fmtTime(h.firstSentAt)} | in "${h.threadTitle}" (${h.tid}) | match ${Math.round(h.score * 100)}%\n${clip(h.text, 1500)}`);
+          return textResult(`${hits.length} results, best first. ${UNTRUSTED}\n\n${lines.join('\n\n')}`);
+        } catch (e) {
+          return { ...textResult(e instanceof Error ? e.message : String(e)), isError: true };
+        }
+      },
+    );
+  }
 
   server.registerTool(
     'list_conversations',

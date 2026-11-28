@@ -15,6 +15,7 @@ import {
   cancelScheduled, createScheduled, editScheduled, listScheduled, ScheduleError, sendScheduledNow, toJson as scheduledJson,
 } from '../scheduled.js';
 import { approveSendRequest, listSendRequests, rejectSendRequest, sendText } from '../outbox.js';
+import { attachmentFile } from '../attachments.js';
 import {
   checkAddress, convertVoice, findContacts, forgetSocket, react, REACTIONS, reportActivity, setTyping, startConversation, updatePresence,
   type ComposeService,
@@ -446,7 +447,6 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
     });
 
     // ---------- attachments ----------
-    const inflight = new Map<number, Promise<string>>();
     const failed = new Map<number, { at: number; error: string }>();
     r.get<{ Params: { id: string }; Querystring: { w?: string; retry?: string } }>('/api/attachments/:id', async (req, reply) => {
       const id = Number(req.params.id);
@@ -463,13 +463,8 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
         if (failedAt && Date.now() - failedAt.at < 10 * 60_000 && !req.query.retry) {
           return reply.code(502).send({ error: failedAt.error });
         }
-        let p = inflight.get(id);
-        if (!p) {
-          p = (a.network === 'apple' ? bb.downloadAttachment(id) : wa.downloadAttachment(id)).finally(() => inflight.delete(id));
-          inflight.set(id, p);
-        }
         try {
-          rel = await p;
+          rel = await attachmentFile(bb, wa, id);
         } catch (e) {
           const error = e instanceof Error ? e.message : String(e);
           failed.set(id, { at: Date.now(), error });

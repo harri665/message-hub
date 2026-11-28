@@ -11,6 +11,7 @@ import { initAuth, registerAuthRoutes, requireSession } from './auth.js';
 import { config } from './config.js';
 import { migrate } from './db.js';
 import { registerApiRoutes } from './routes/api.js';
+import { registerAiRoutes, startAi } from './ai/index.js';
 import { registerLinkRoutes } from './routes/links.js';
 import { redactUrl, registerMcp } from './mcp.js';
 import { startScheduler } from './scheduled.js';
@@ -105,6 +106,7 @@ app.register(async (r) => {
   registerLinkRoutes(r, bb);
 });
 registerMcp(app);
+registerAiRoutes(app);
 
 // Errors that set a status on purpose carry a message meant for the user; anything else (database errors,
 // unexpected failures) is logged and answered generically, so internals don't leak.
@@ -120,6 +122,7 @@ await app.listen({ port: config.port, host: '0.0.0.0' });
 bb.start().catch((e) => app.log.error(e, 'BlueBubbles start failed'));
 wa.start().catch((e) => app.log.error(e, 'WhatsApp start failed'));
 startScheduler(bb, wa, app.log);
+startAi(bb, wa, app.log);
 
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, () => {

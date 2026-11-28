@@ -2,7 +2,8 @@
 # .env.example in the stack's environment settings (never commit real values).
 services:
   db:
-    image: postgres:17-alpine
+    # postgres:17-alpine plus pgvector (services/db/Dockerfile), for search by meaning.
+    build: ./services/db
     restart: unless-stopped
     environment:
       POSTGRES_DB: messagehub
@@ -49,6 +50,13 @@ services:
       BLUEBUBBLES_PASSWORD: ${BLUEBUBBLES_PASSWORD:-}
       WA_CONNECTOR_URL: http://wa:8090
       INTERNAL_SECRET: ${INTERNAL_SECRET}
+      CF_ACCOUNT_ID: ${CF_ACCOUNT_ID:-}
+      CF_API_TOKEN: ${CF_API_TOKEN:-}
+      AI_DAILY_NEURONS: ${AI_DAILY_NEURONS:-}
+      AI_MODEL_ANSWER: ${AI_MODEL_ANSWER:-}
+      AI_MODEL_REPLY: ${AI_MODEL_REPLY:-}
+      AI_MODEL_VISION: ${AI_MODEL_VISION:-}
+      AI_MODEL_FALLBACK: ${AI_MODEL_FALLBACK:-}
     volumes:
       - attachments:/data/attachments
     depends_on:

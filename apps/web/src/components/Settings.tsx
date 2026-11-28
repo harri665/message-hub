@@ -4,6 +4,7 @@ import QRCode from 'qrcode';
 import { api } from '../api.ts';
 import { clearLocalData } from '../localCache.ts';
 import { listTime } from '../format.ts';
+import { useAiStatus } from '../aiStatus.ts';
 
 function QR({ code }: { code: string }) {
   const [url, setUrl] = useState<string | null>(null);
@@ -59,6 +60,65 @@ function CopyField({ label, value }: { label: string; value: string }) {
       >
         {copied ? 'Copied' : 'Copy'}
       </button>
+    </div>
+  );
+}
+
+const num = (n: number) => n.toLocaleString();
+const modelName = (m: string) => m.split('/').pop() ?? m;
+
+/** AI features through Cloudflare Workers AI: today's share of the free allowance and how far the background work has got. */
+function AiFeatures() {
+  const status = useAiStatus(30_000);
+  const s = status.data;
+  if (!s) return <div className="group"><div className="group-row"><span>{status.isError ? status.error.message : 'Loading'}</span></div></div>;
+  if (!s.enabled) {
+    return (
+      <div className="group">
+        <div className="group-body">
+          <p style={{ margin: 0 }}>
+            Off. Photo descriptions, search by meaning, AI answers and reply suggestions run on Cloudflare Workers AI's free daily allowance.
+            To turn them on, set CF_ACCOUNT_ID and CF_API_TOKEN in the hub's environment and restart it.
+          </p>
+        </div>
+      </div>
+    );
+  }
+  const share = Math.min(1, s.usedToday / s.limit);
+  const reset = new Date(s.resetsAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return (
+    <div className="group">
+      <div className="group-body">
+        <div className="ai-meter" role="meter" aria-valuemin={0} aria-valuemax={s.limit} aria-valuenow={s.usedToday} aria-label="AI allowance used today">
+          <span style={{ width: `${share * 100}%` }} className={share >= 0.8 ? 'high' : ''} />
+        </div>
+        <p className="note" style={{ margin: 0 }}>
+          {num(s.usedToday)} of {num(s.limit)} Neurons used today. Resets at {reset}.
+          {share >= 0.8 && ' Answers and suggestions now use the cheaper fallback model.'}
+        </p>
+      </div>
+      <div className="group-row">
+        <span>Photo descriptions</span>
+        <span className="value">{num(s.photos.described)} described{s.photos.pending ? `, ${num(s.photos.pending)} waiting` : ''}</span>
+      </div>
+      <div className="group-row">
+        <span>Search by meaning</span>
+        <span className="value">
+          {num(s.search.embedded)} stretches of conversation indexed
+          {s.search.waitingMessages + s.search.waitingChunks ? `, ${num(s.search.waitingMessages)} messages waiting` : ''}
+        </span>
+      </div>
+      <div className="group-row">
+        <span>Models</span>
+        <span className="value">
+          answers {modelName(s.models.answer)}, replies {modelName(s.models.reply)}, photos {modelName(s.models.vision)}, fallback {modelName(s.models.fallback)}
+        </span>
+      </div>
+      <div className="group-body">
+        <p className="note" style={{ margin: 0 }}>
+          Message text and photos are sent to Cloudflare to be processed. Old photos and messages are worked through a little each day, while most of the allowance is unused.
+        </p>
+      </div>
     </div>
   );
 }
@@ -232,6 +292,9 @@ export function Settings({ onClose }: { onClose: () => void }) {
             </div>
           )}
         </div>
+
+        <h3 className="group-title">AI features</h3>
+        <AiFeatures />
 
         <h3 className="group-title">Claude</h3>
         <ClaudeAccess />
