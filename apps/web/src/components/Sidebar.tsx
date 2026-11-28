@@ -5,6 +5,7 @@ import { listTime, serviceClass } from '../format.ts';
 import { Avatar } from './Avatar.tsx';
 import { Highlight } from './Highlight.tsx';
 import { useDrafts, useTyping } from '../stores.ts';
+import { useLongPress } from '../longPress.ts';
 import { allOperators, complete, freeText, type Completion, type Suggestion } from '../searchSuggest.ts';
 
 type Filter = 'all' | 'unread' | 'apple' | 'whatsapp';
@@ -60,7 +61,7 @@ export function Sidebar({ activeTid, composing, onOpen, onNew, onSettings }: {
   const archivedInfo = useQuery({ queryKey: ['threads', 'archived-summary'], queryFn: api.archivedSummary, refetchInterval: 60_000 });
   const archivedCount = archivedInfo.data?.archivedCount ?? 0;
   const archivedUnread = archivedInfo.data?.archivedUnread ?? 0;
-  const [menu, setMenu] = useState<{ tid: string; x: number; y: number; archived: boolean } | null>(null);
+  const [menu, setMenu] = useState<{ tid: string; x: number; y: number; archived: boolean; pinned: boolean } | null>(null);
   const [toast, setToast] = useState<{ tid: string; archived: boolean } | null>(null);
   const setArchived = async (tid: string, archived: boolean) => {
     setMenu(null);
@@ -71,6 +72,16 @@ export function Sidebar({ activeTid, composing, onOpen, onNew, onSettings }: {
     } catch (e) {
       setToast(null);
       alert(e instanceof Error ? e.message : 'Could not change the archive setting');
+    }
+    qc.invalidateQueries({ queryKey: ['threads'] });
+    qc.invalidateQueries({ queryKey: ['thread', tid] });
+  };
+  const setPinned = async (tid: string, pinned: boolean) => {
+    setMenu(null);
+    try {
+      await api.pinThread(tid, pinned);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Could not change the pin');
     }
     qc.invalidateQueries({ queryKey: ['threads'] });
     qc.invalidateQueries({ queryKey: ['thread', tid] });
@@ -275,34 +286,18 @@ export function Sidebar({ activeTid, composing, onOpen, onNew, onSettings }: {
         {threads.data && threads.data.length > 0 && !filtered.length && !deferred && (
           <p className="list-note">{filter === 'unread' ? "You're all caught up." : 'No conversations here.'}</p>
         )}
-        {filtered.map((t) => (
-          <button
+        {filtered.map((t, i) => (
+          <ThreadRowButton
             key={t.tid}
-            className={`thread-row ${t.tid === activeTid ? 'active' : ''} ${t.unread ? 'unread' : ''} ${t.muted ? 'muted' : ''}`}
-            onClick={() => onOpen(t.tid)}
-            onContextMenu={(e) => { e.preventDefault(); setMenu({ tid: t.tid, x: e.clientX, y: e.clientY, archived: showArchived }); }}
-            onPointerEnter={() => prefetch(t.tid)}
-            onFocus={() => prefetch(t.tid)}
-            aria-current={t.tid === activeTid ? 'page' : undefined}
+            t={t}
+            active={t.tid === activeTid}
+            lastPinned={!!t.pinned_at && !filtered[i + 1]?.pinned_at}
+            onOpen={() => onOpen(t.tid)}
+            onMenu={(x, y) => setMenu({ tid: t.tid, x, y, archived: showArchived, pinned: !!t.pinned_at })}
+            onPrefetch={() => prefetch(t.tid)}
           >
-            <Avatar tid={t.tid} title={t.title} isGroup={t.is_group} version={t.avatar} />
-            <span className="thread-main">
-              <span className="thread-top">
-                <span className="thread-title">{t.title}</span>
-                <time className="thread-time">{listTime(t.last_at)}</time>
-              </span>
-              <span className="thread-bottom">
-                <RowPreview t={t} typing={!!typing[t.tid]?.length} draft={t.tid !== activeTid ? drafts[t.tid] : undefined} />
-                <span className="thread-badges">
-                  {t.muted && <span className="muted-tag" title={mutedLabel(t.muted_until)}>Muted</span>}
-                  {t.last_service && (
-                    <span className={`svc-dot ${serviceClass(t.last_service)}`} title={`Last message via ${SERVICE_LABEL[t.last_service]}`} />
-                  )}
-                  {t.unread > 0 && <span className="unread-count">{t.unread}</span>}
-                </span>
-              </span>
-            </span>
-          </button>
+            <RowPreview t={t} typing={!!typing[t.tid]?.length} draft={t.tid !== activeTid ? drafts[t.tid] : undefined} />
+          </ThreadRowButton>
         ))}
         {deferred.length >= 2 && (
           <section className="search-results" aria-label="Matching messages">
@@ -333,6 +328,7 @@ export function Sidebar({ activeTid, composing, onOpen, onNew, onSettings }: {
       </nav>
       {menu && (
         <div className="mute-menu glass ctx-menu" role="menu" style={{ left: menu.x, top: menu.y }}>
+          {!menu.archived && <button role="menuitem" onClick={() => setPinned(menu.tid, !menu.pinned)}>{menu.pinned ? 'Unpin' : 'Pin'}</button>}
           <button role="menuitem" onClick={() => setArchived(menu.tid, !menu.archived)}>{menu.archived ? 'Unarchive' : 'Archive'}</button>
         </div>
       )}
@@ -343,5 +339,52 @@ export function Sidebar({ activeTid, composing, onOpen, onNew, onSettings }: {
         </div>
       )}
     </aside>
+  );
+}
+
+/** A pushpin, drawn here so it follows the text colour. */
+function PinGlyph() {
+  return (
+    <svg className="pin-glyph" viewBox="0 0 16 16" width="11" height="11" role="img" aria-label="Pinned" fill="currentColor">
+      <title>Pinned</title>
+      <path d="M5 1.5h6l-.7 1.2v3.3l2 2.3v1H8.8V14L8 15l-.8-1V9.3H3v-1l2-2.3V2.7z" />
+    </svg>
+  );
+}
+
+/** One conversation in the list. Right-click, or press and hold on a touch screen, opens its menu (Pin, Archive). */
+function ThreadRowButton({ t, active, lastPinned, onOpen, onMenu, onPrefetch, children }: {
+  t: ThreadSummary; active: boolean; lastPinned: boolean; onOpen: () => void; onMenu: (x: number, y: number) => void;
+  onPrefetch: () => void; children: React.ReactNode;
+}) {
+  const press = useLongPress((x, y) => onMenu(x, y));
+  return (
+    <button
+      className={`thread-row ${active ? 'active' : ''} ${t.unread ? 'unread' : ''} ${t.muted ? 'muted' : ''} ${t.pinned_at ? 'pinned' : ''} ${lastPinned ? 'last-pinned' : ''}`}
+      onClick={onOpen}
+      {...press}
+      onPointerEnter={onPrefetch}
+      onFocus={onPrefetch}
+      aria-current={active ? 'page' : undefined}
+    >
+      <Avatar tid={t.tid} title={t.title} isGroup={t.is_group} version={t.avatar} />
+      <span className="thread-main">
+        <span className="thread-top">
+          <span className="thread-title">{t.title}</span>
+          {t.pinned_at && <PinGlyph />}
+          <time className="thread-time">{listTime(t.last_at)}</time>
+        </span>
+        <span className="thread-bottom">
+          {children}
+          <span className="thread-badges">
+            {t.muted && <span className="muted-tag" title={mutedLabel(t.muted_until)}>Muted</span>}
+            {t.last_service && (
+              <span className={`svc-dot ${serviceClass(t.last_service)}`} title={`Last message via ${SERVICE_LABEL[t.last_service]}`} />
+            )}
+            {t.unread > 0 && <span className="unread-count">{t.unread}</span>}
+          </span>
+        </span>
+      </span>
+    </button>
   );
 }

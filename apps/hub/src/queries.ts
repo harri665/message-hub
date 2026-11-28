@@ -8,11 +8,12 @@ import { hasFilters, likePattern, parseSearch, type HasValue } from './searchque
 export interface ConvRow {
   id: number; network: 'apple' | 'whatsapp'; source_id: string; title: string | null; is_group: boolean;
   last_message_at: string | null; unread_count: number; muted_until: string | null; archived: boolean;
+  pinned_at: string | null;
 }
 
 export const MESSAGE_COLUMNS = `
   m.id, m.conversation_id, m.service, m.from_me, m.kind, m.body, m.sent_at, m.delivered_at, m.read_at, m.edited_at,
-  m.unsent, m.status, m.pinned_at,
+  m.unsent, m.status,
   sh.person_id as sender_person_id,
   coalesce(spn.name, spa.address, sh.address) as sender_name,
   coalesce((select json_agg(json_build_object('id', a.id, 'mime', a.mime, 'filename', a.filename, 'size', a.size,
@@ -58,7 +59,11 @@ async function loadThreadConversations(tid: string): Promise<ConvRow[]> {
 
 // ---------- inbox ----------
 
-export interface ThreadFilter { limit?: number; offset?: number; unreadOnly?: boolean; match?: string; tid?: string; archived?: boolean }
+export interface ThreadFilter {
+  limit?: number; offset?: number; unreadOnly?: boolean; match?: string; tid?: string; archived?: boolean;
+  /** Pinned threads first (in the order they were pinned), then the rest newest first. The apps' inbox uses this. */
+  pinnedFirst?: boolean;
+}
 
 /**
  * Threads newest first. `match` keeps threads whose name, member names or addresses contain the text.
@@ -69,7 +74,7 @@ export function listThreads(f: ThreadFilter = {}) {
   const limit = Math.min(f.limit ?? 100, 500);
   const match = f.match?.trim() ? `%${f.match.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
   const digits = f.match?.replace(/\D/g, '') ?? '';
-  const args = [limit, f.offset ?? 0, !!f.unreadOnly, match, digits, f.tid ?? null, !!f.archived];
+  const args = [limit, f.offset ?? 0, !!f.unreadOnly, match, digits, f.tid ?? null, !!f.archived, !!f.pinnedFirst];
   return cached(`threads:${JSON.stringify(args)}`, () => q(THREADS_SQL, args));
 }
 
@@ -90,7 +95,9 @@ const THREADS_SQL = `
                   bool_and(coalesce(c.muted_until > now(), false)) as muted,
                   min(c.muted_until) filter (where c.muted_until > now()) as muted_until,
                   -- Archived only when every chat in it is. A new message never un-archives it.
-                  bool_and(c.archived) as archived
+                  bool_and(c.archived) as archived,
+                  -- Pinned while any chat in it is (a chat that joins later, like a new WhatsApp chat, doesn't unpin it).
+                  min(c.pinned_at) as pinned_at
            from conversation c join ct on ct.conversation_id = c.id
            group by ct.tid
            having max(c.last_message_at) is not null
@@ -127,10 +134,11 @@ const THREADS_SQL = `
            where (not $3 or n.unread > 0)
              and ($6::text is null or n.tid = $6)
              and ($4::text is null or n.title ilike $4 or n.tid in (select tid from matched))
-           order by n.last_at desc
+           order by case when $8 then n.pinned_at end asc nulls last, n.last_at desc
            limit $1 offset $2
          )
     select p.tid, p.is_group, p.last_at, p.unread, p.conversation_ids, p.networks, p.title, p.muted, p.muted_until, p.archived,
+           p.pinned_at,
            ${THREAD_AVATAR_SQL('p.person_id', 'p.conversation_ids[1]')} as avatar,
            lm.body as last_body, lm.from_me as last_from_me, lm.service as last_service, lm.kind as last_kind,
            lm.unsent as last_unsent, lm.has_attachment as last_has_attachment, lm.sender_name as last_sender_name
@@ -145,7 +153,7 @@ const THREADS_SQL = `
       left join pn spn on spn.person_id = sh.person_id
       order by m.sent_at desc limit 1
     ) lm on true
-    order by p.last_at desc`;
+    order by case when $8 then p.pinned_at end asc nulls last, p.last_at desc`;
 
 /** How many threads are archived, and how many unread messages they hold (shown beside the Archived row). */
 export function archivedSummary() {
@@ -191,22 +199,6 @@ async function loadThreadMessages(convIds: number[], p: MessagePage) {
   if (p.after) return page('and m.sent_at > $2', 'asc', [p.after], limit);
   const rows = await page('and ($2::timestamptz is null or m.sent_at < $2)', 'desc', [p.before ?? null], limit);
   return rows.reverse();
-}
-
-/** The pinned messages of a thread (all its conversations), newest pin first. Unsent messages drop out. */
-export function threadPins(convIds: number[]) {
-  return q(
-    `select m.id, m.conversation_id, m.pinned_at, m.sent_at, m.from_me, left(m.body, 200) as body,
-            coalesce(spn.name, spa.address, sh.address) as sender_name,
-            exists(select 1 from attachment a where a.message_id = m.id) as has_attachment
-     from message m
-     left join handle sh on sh.id = m.sender_handle_id
-     left join person_name spn on spn.person_id = sh.person_id
-     left join person_address spa on spa.person_id = sh.person_id
-     where m.conversation_id = any($1) and m.pinned_at is not null and not m.unsent
-     order by m.pinned_at desc, m.id desc`,
-    [convIds],
-  );
 }
 
 // ---------- search ----------

@@ -19,7 +19,7 @@ import {
   checkAddress, convertVoice, findContacts, forgetSocket, react, REACTIONS, reportActivity, setTyping, startConversation, updatePresence,
   type ComposeService,
 } from '../actions.js';
-import { archivedSummary, listThreads, searchMessages, threadConversations, threadMessages, threadPins, type SearchFilter } from '../queries.js';
+import { archivedSummary, listThreads, searchMessages, threadConversations, threadMessages, type SearchFilter } from '../queries.js';
 
 const THUMB_WIDTHS = new Set([320, 640, 1280]);
 /** Image formats we make resized copies of. Others (SVG, TIFF, ...) are never decoded on the server. */
@@ -174,7 +174,7 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
         const s = await archivedSummary();
         reply.header('x-archived-count', s.archivedCount).header('x-archived-unread', s.archivedUnread);
       }
-      return listThreads({ limit: Number(req.query.limit ?? 100), offset: Number(req.query.offset ?? 0), archived });
+      return listThreads({ limit: Number(req.query.limit ?? 100), offset: Number(req.query.offset ?? 0), archived, pinnedFirst: true });
     });
 
     r.get('/api/threads/archived-summary', async () => archivedSummary());
@@ -212,6 +212,7 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
         isGroup,
         avatar,
         archived: convs.every((c) => c.archived),
+        pinned: convs.some((c) => !!c.pinned_at),
         muted: convs.every((c) => !!c.muted_until && new Date(c.muted_until) > new Date()),
         title: convs[0].title ?? name ?? members.map((m) => m.name ?? m.address).join(', '),
         conversations: convs.map((c) => ({
@@ -219,10 +220,6 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
           lastService: svc.get(c.id) ?? (c.network === 'whatsapp' ? 'whatsapp' : 'imessage'),
         })),
         members,
-        pins: (await threadPins(convs.map((c) => c.id))).map((p) => ({
-          id: p.id, pinnedAt: p.pinned_at, sentAt: p.sent_at, fromMe: p.from_me, text: p.body,
-          sender: p.from_me ? null : p.sender_name, hasAttachment: p.has_attachment,
-        })),
       };
     };
 
@@ -258,21 +255,24 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
       return { ok: true, muted, until };
     });
 
-    // Pin or unpin one message. Pins live only in the hub: nothing is sent to iMessage or WhatsApp.
+    // Pin or unpin a thread: pinned threads stay at the top of the list, in the order they were pinned. Pins live only
+    // in the hub, so nothing is sent to iMessage or WhatsApp and the phone's own pins are left alone.
     for (const [action, pinned] of [['pin', true], ['unpin', false]] as const) {
-      r.post<{ Params: { id: string } }>(`/api/messages/:id/${action}`, async (req, reply) => {
-        const id = Number(req.params.id);
-        if (!Number.isSafeInteger(id)) return reply.code(404).send({ error: 'message not found' });
-        const row = await q1<{ conversation_id: number; pinned_at: string | null }>(
-          // Pinning again keeps the original pin time; unsent messages can't be pinned.
+      r.post<{ Params: { tid: string } }>(`/api/threads/:tid/${action}`, async (req, reply) => {
+        const convs = await threadConversations(req.params.tid);
+        if (!convs.length) return reply.code(404).send({ error: 'thread not found' });
+        // Pinning again keeps the original pin time (and so the thread's place among the pins).
+        const ids = convs.map((c) => c.id);
+        const row = await q1<{ at: string | null }>(
           pinned
-            ? "update message set pinned_at = coalesce(pinned_at, now()) where id = $1 and not unsent and kind = 'text' returning conversation_id, pinned_at"
-            : 'update message set pinned_at = null where id = $1 returning conversation_id, pinned_at',
-          [id],
+            ? `with t as (select coalesce(min(pinned_at), now()) as at from conversation where id = any($1))
+               update conversation c set pinned_at = t.at from t where c.id = any($1) returning t.at`
+            : 'update conversation set pinned_at = null where id = any($1) returning null::timestamptz as at',
+          [ids],
         );
-        if (!row) return reply.code(404).send({ error: 'message not found' });
-        emitLive({ type: 'message-updated', conversationId: row.conversation_id, messageId: id });
-        return { ok: true, pinned: !!row.pinned_at, pinnedAt: row.pinned_at };
+        const at = row?.at ?? null;
+        for (const id of ids) emitLive({ type: 'conversation-updated', conversationId: id });
+        return { ok: true, pinned, pinnedAt: at };
       });
     }
 
@@ -289,7 +289,8 @@ export function registerApiRoutes(app: FastifyInstance, bb: BlueBubbles, wa: Wha
               throw Object.assign(new Error(`Couldn't change the archive setting on WhatsApp: ${e instanceof Error ? e.message : e}`), { statusCode: 502 });
             });
           }
-          await q('update conversation set archived = $2 where id = $1', [c.id, archived]);
+          // An archived chat leaves the pins, as in WhatsApp.
+          await q(`update conversation set archived = $2, pinned_at = case when $2 then null else pinned_at end where id = $1`, [c.id, archived]);
           emitLive({ type: 'conversation-updated', conversationId: c.id });
         }
         return { ok: true, archived };

@@ -4,7 +4,7 @@ import { api, SERVICE_LABEL, type Message, type MessagePage, type Service } from
 import { dayLabel, listTime, sameDay, serviceClass } from '../format.ts';
 import { Avatar } from './Avatar.tsx';
 import { Highlight } from './Highlight.tsx';
-import { MessageBubble, PinGlyph } from './MessageBubble.tsx';
+import { MessageBubble } from './MessageBubble.tsx';
 import { Composer } from './Composer.tsx';
 import { ClockGlyph, ScheduledBubbles } from './ScheduledBubbles.tsx';
 import { useTyping } from '../stores.ts';
@@ -127,43 +127,6 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
   const reactionSets = useQuery({ queryKey: ['reactions'], queryFn: api.reactions, staleTime: Infinity });
   const typists = useTyping()[tid] ?? [];
   const t = thread.data;
-  const pins = t?.pins ?? [];
-
-  const togglePin = useCallback(
-    async (m: Message) => {
-      try {
-        await (m.pinned_at ? api.unpin(m.id) : api.pin(m.id));
-      } catch {
-        /* the next refresh shows the real state */
-      }
-      qc.invalidateQueries({ queryKey: ['messages', tid] });
-      qc.invalidateQueries({ queryKey: ['thread', tid] });
-    },
-    [qc, tid],
-  );
-
-  // The pinned bar shows one pin at a time; clicking it moves to the next and brings that message into view.
-  const [pinIndex, setPinIndex] = useState(0);
-  const pinShown = pins.length ? Math.min(pinIndex, pins.length - 1) : 0;
-  useEffect(() => setPinIndex(0), [tid]);
-  const showPin = useCallback(
-    (index: number) => {
-      const pin = pins[index];
-      if (!pin) return;
-      setPinIndex(index);
-      const el = scrollRef.current?.querySelector<HTMLElement>(`[data-mid="${pin.id}"]`);
-      if (el) {
-        // Already loaded: scroll to it. Otherwise open the conversation around it (which loads older pages as needed).
-        el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        setFlash(null);
-        requestAnimationFrame(() => setFlash(pin.id));
-        setTimeout(() => setFlash((f) => (f === pin.id ? null : f)), 2200);
-      } else {
-        onFocus(pin.id);
-      }
-    },
-    [pins, onFocus],
-  );
   const services = Array.from(new Set(t?.conversations.map((c) => c.lastService) ?? []));
   const lastFromMeId = [...list].reverse().find((m) => m.from_me && m.kind === 'text')?.id;
 
@@ -178,7 +141,7 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
 
   return (
     <section className="thread" ref={rootRef} aria-label={t?.title ?? 'Conversation'}>
-      <div className={`messages ${pins.length ? 'has-pins' : ''}`} ref={scrollRef} onScroll={onScroll}>
+      <div className="messages" ref={scrollRef} onScroll={onScroll}>
         <div className="messages-inner">
           {messages.isFetchingNextPage && <p className="list-note center">Loading older messages</p>}
           {!messages.hasNextPage && list.length > 0 && <p className="list-note center">Start of conversation</p>}
@@ -207,7 +170,6 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
                   lastInRun={!grouped(m, next) || (!!next && !sameDay(m.sent_at, next.sent_at))}
                   showStatus={m.id === lastFromMeId && !pending.length}
                   onReply={() => setReplyTo(m)}
-                  onTogglePin={() => togglePin(m)}
                   onOpenImage={setLightbox}
                   reactionChoices={reactionSets.data?.[t?.conversations.find((c) => c.id === m.conversation_id)?.network ?? (m.service === 'whatsapp' ? 'whatsapp' : 'apple')]}
                 />
@@ -284,22 +246,6 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
           {findOpen ? 'Done' : 'Search'}
         </button>
       </header>
-
-      {pins.length > 0 && (
-        <div className="pin-bar glass" role="region" aria-label="Pinned messages">
-          <PinGlyph className="pin-bar-icon" />
-          <button className="pin-bar-main" onClick={() => showPin((pinShown + 1) % pins.length)} title={pins.length > 1 ? 'Show the next pinned message' : 'Show the pinned message'}>
-            <span className="pin-bar-label">
-              Pinned{pins.length > 1 ? ` ${pinShown + 1} of ${pins.length}` : ''}
-              <span className="pin-bar-who"> {pins[pinShown].sender ?? 'You'}, {listTime(pins[pinShown].sentAt)}</span>
-            </span>
-            <span className="pin-bar-text">{pins[pinShown].text || (pins[pinShown].hasAttachment ? 'Attachment' : 'Message')}</span>
-          </button>
-          <button className="pill-btn pin-bar-unpin" onClick={() => api.unpin(pins[pinShown].id).then(() => { qc.invalidateQueries({ queryKey: ['thread', tid] }); qc.invalidateQueries({ queryKey: ['messages', tid] }); })} aria-label="Unpin this message">
-            Unpin
-          </button>
-        </div>
-      )}
 
       {findOpen && <FindInThread tid={tid} onPick={(id) => onFocus(id)} onClose={() => setFindOpen(false)} />}
 

@@ -19,6 +19,8 @@ export interface ThreadSummary {
   muted: boolean;
   muted_until: string | null;
   archived: boolean;
+  /** When the conversation was pinned to the top of the list, or null. Pinned ones come first, in pin order. */
+  pinned_at: string | null;
   /** Version of the profile photo (see /api/avatars/:tid), or null when there is none. */
   avatar: string | null;
 }
@@ -32,20 +34,8 @@ export interface ThreadDetail {
   title: string;
   conversations: { id: number; network: Network; title: string | null; lastMessageAt: string | null; unread: number; lastService: Service }[];
   members: { id: number; network: Network; address: string; name: string | null }[];
-  /** Pinned messages (private to the hub), newest pin first. */
-  pins: Pin[];
-}
-
-export interface Pin {
-  id: number;
-  pinnedAt: string;
-  sentAt: string;
-  fromMe: boolean;
-  /** First 200 characters of the message, or null for an attachment with no text. */
-  text: string | null;
-  /** Who sent it; null for you. */
-  sender: string | null;
-  hasAttachment: boolean;
+  /** Pinned to the top of the conversation list (private to the hub). */
+  pinned: boolean;
 }
 
 export interface Attachment { id: number; mime: string | null; filename: string | null; size: number | null; width: number | null; height: number | null }
@@ -63,7 +53,6 @@ export interface Message {
   read_at: string | null;
   edited_at: string | null;
   unsent: boolean;
-  pinned_at: string | null;
   status: 'sending' | 'sent' | 'failed';
   sender_person_id: number | null;
   sender_name: string | null;
@@ -177,8 +166,7 @@ export const api = {
   },
   markRead: (tid: string) => post(`/api/threads/${tid}/read`),
   mute: (tid: string, muted: boolean, hours: number | null = null) => post(`/api/threads/${tid}/mute`, { muted, hours }),
-  pin: (id: number) => post<{ ok: true; pinned: boolean }>(`/api/messages/${id}/pin`),
-  unpin: (id: number) => post<{ ok: true; pinned: boolean }>(`/api/messages/${id}/unpin`),
+  pinThread: (tid: string, pinned: boolean) => post<{ ok: true; pinned: boolean }>(`/api/threads/${tid}/${pinned ? 'pin' : 'unpin'}`),
   send: (tid: string, body: { text: string; conversationId?: number; replyToId?: number }) => post(`/api/threads/${tid}/send`, body),
   sendFile: (tid: string, file: File, conversationId?: number, caption?: string, voice = false) => {
     const form = new FormData();

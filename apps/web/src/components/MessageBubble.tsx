@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Attachment, Message } from '../api.ts';
 import { api, SERVICE_LABEL } from '../api.ts';
 import { clock, fileSize, fullTime, serviceClass } from '../format.ts';
 import { LinkCard, useLinkPreview } from './LinkPreview.tsx';
+import { useLongPress } from '../longPress.ts';
 
 const URL_RE = /(https?:\/\/[^\s<]+[^\s<.,:;"')\]])/g;
 
@@ -79,16 +81,6 @@ function AttachmentView({ a, onOpenImage }: { a: Attachment; onOpenImage: (src: 
   );
 }
 
-/** A map-pin style glyph, drawn here so it follows the text colour. */
-export function PinGlyph({ className, title }: { className?: string; title?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 16 16" width="12" height="12" role="img" aria-label={title} fill="currentColor">
-      {title && <title>{title}</title>}
-      <path d="M5 1.5h6l-.7 1.2v3.3l2 2.3v1H8.8V14L8 15l-.8-1V9.3H3v-1l2-2.3V2.7z" />
-    </svg>
-  );
-}
-
 function statusText(m: Message) {
   if (m.status === 'failed') return 'Not delivered';
   if (m.read_at) return `Read ${clock(m.read_at)}`;
@@ -96,13 +88,53 @@ function statusText(m: Message) {
   return 'Sent';
 }
 
-/** Picks my reaction. iMessage offers its six tapbacks, WhatsApp a row of common emoji. Picking the current one removes it. */
-function ReactionPicker({ m, choices, onClose }: { m: Message; choices: string[]; onClose: () => void }) {
+/** Sends my reaction to a message. Picking my current reaction again removes it. */
+function useReact(m: Message, onDone: () => void) {
   const qc = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
   const mine = m.reactions.find((r) => r.fromMe)?.emoji ?? null;
+  const pick = async (emoji: string) => {
+    setBusy(emoji);
+    setError(null);
+    try {
+      await api.react(m.id, emoji === mine ? null : emoji);
+      await qc.invalidateQueries({ queryKey: ['messages'] });
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not react');
+    } finally {
+      setBusy(null);
+    }
+  };
+  return { mine, busy, error, pick };
+}
+
+function ReactionRow({ choices, mine, busy, pick }: { choices: string[]; mine: string | null; busy: string | null; pick: (e: string) => void }) {
+  return (
+    <div className="react-choices" role="group" aria-label="React">
+      {choices.map((e) => (
+        <button
+          key={e}
+          type="button"
+          role="menuitemradio"
+          aria-checked={e === mine}
+          className={e === mine ? 'mine' : ''}
+          disabled={!!busy}
+          onClick={() => pick(e)}
+          title={e === mine ? 'Remove your reaction' : undefined}
+        >
+          {e}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Picks my reaction. iMessage offers its six tapbacks, WhatsApp a row of common emoji. Picking the current one removes it. */
+function ReactionPicker({ m, choices, onClose }: { m: Message; choices: string[]; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const { mine, busy, error, pick } = useReact(m, onClose);
 
   useEffect(() => {
     // The React button toggles the picker itself, so clicks on it don't count as outside.
@@ -117,53 +149,92 @@ function ReactionPicker({ m, choices, onClose }: { m: Message; choices: string[]
     };
   }, [onClose]);
 
-  const pick = async (emoji: string) => {
-    setBusy(emoji);
-    setError(null);
-    try {
-      await api.react(m.id, emoji === mine ? null : emoji);
-      await qc.invalidateQueries({ queryKey: ['messages'] });
-      onClose();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not react');
-    } finally {
-      setBusy(null);
-    }
-  };
-
   return (
     <div ref={ref} className="react-picker glass" role="menu" aria-label="React">
-      <div className="react-choices">
-        {choices.map((e) => (
-          <button
-            key={e}
-            type="button"
-            role="menuitemradio"
-            aria-checked={e === mine}
-            className={e === mine ? 'mine' : ''}
-            disabled={!!busy}
-            onClick={() => pick(e)}
-            title={e === mine ? 'Remove your reaction' : undefined}
-          >
-            {e}
-          </button>
-        ))}
-      </div>
+      <ReactionRow choices={choices} mine={mine} busy={busy} pick={pick} />
       {busy && <p className="note">Sending</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
     </div>
   );
 }
 
+/**
+ * The message menu, opened by right-clicking a message or pressing and holding it on a touch screen: the reactions
+ * on top, then Reply and Copy. It opens at the pointer and is kept inside the window.
+ */
+function MessageMenu({ m, at, link, choices, onReply, onClose }: {
+  m: Message; at: { x: number; y: number }; link: string | null; choices?: string[]; onReply: () => void; onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const { mine, busy, error, pick } = useReact(m, onClose);
+  const [pos, setPos] = useState(at);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const pad = 8;
+    setPos({
+      x: Math.max(pad, Math.min(at.x, window.innerWidth - r.width - pad)),
+      y: at.y + r.height + pad > window.innerHeight ? Math.max(pad, at.y - r.height) : at.y,
+    });
+  }, [at]);
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => !ref.current?.contains(e.target as Node) && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const onScroll = () => onClose();
+    document.addEventListener('pointerdown', onDown, true);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onScroll);
+    document.addEventListener('scroll', onScroll, true);
+    ref.current?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
+    return () => {
+      document.removeEventListener('pointerdown', onDown, true);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', onScroll);
+      document.removeEventListener('scroll', onScroll, true);
+    };
+  }, [onClose]);
+  const copy = (text: string) => {
+    navigator.clipboard?.writeText(text).catch(() => {});
+    onClose();
+  };
+  const canReact = !m.unsent && !!choices?.length;
+  return createPortal(
+    <div ref={ref} className="msg-menu glass" role="menu" aria-label="Message" style={{ left: pos.x, top: pos.y }} onContextMenu={(e) => e.preventDefault()}>
+      {canReact && <ReactionRow choices={choices!} mine={mine} busy={busy} pick={pick} />}
+      {busy && <p className="note">Sending</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="msg-menu-items">
+        <button type="button" role="menuitem" onClick={() => { onReply(); onClose(); }}>Reply</button>
+        {!m.unsent && !!m.body && <button type="button" role="menuitem" onClick={() => copy(m.body!)}>Copy</button>}
+        {link && <button type="button" role="menuitem" onClick={() => copy(link)}>Copy Link</button>}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** Right-click, or press and hold on a touch screen, opens the message menu. */
+function useMessageMenu() {
+  const [menu, setMenu] = useState<{ x: number; y: number; link: string | null } | null>(null);
+  const handlers = useLongPress((x, y, target) => {
+    const a = (target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+    setMenu({ x, y, link: a?.href ?? null });
+  });
+  const close = useCallback(() => setMenu(null), []);
+  return { menu, close, handlers };
+}
+
 export function MessageBubble({
-  m, isGroup, firstInRun, lastInRun, showStatus, highlighted, onReply, onTogglePin, onOpenImage, reactionChoices,
+  m, isGroup, firstInRun, lastInRun, showStatus, highlighted, onReply, onOpenImage, reactionChoices,
 }: {
-  m: Message; isGroup: boolean; firstInRun: boolean; lastInRun: boolean; showStatus: boolean; highlighted?: boolean; onReply: () => void; onTogglePin: () => void;
+  m: Message; isGroup: boolean; firstInRun: boolean; lastInRun: boolean; showStatus: boolean; highlighted?: boolean; onReply: () => void;
   onOpenImage: (src: string) => void;
   /** Reactions this message's service can send; none while they're loading. */
   reactionChoices?: string[];
 }) {
   const [picking, setPicking] = useState(false);
+  const { menu, close: closeMenu, handlers: menuHandlers } = useMessageMenu();
   if (m.kind === 'system') {
     return (
       <p className={`system-msg ${highlighted ? 'hit' : ''}`} data-mid={m.id}>
@@ -178,12 +249,16 @@ export function MessageBubble({
   const hasText = !!text && !m.unsent;
   return (
     <div
-      className={`msg ${side} ${serviceClass(m.service)} ${firstInRun ? 'first' : ''} ${lastInRun ? 'last' : ''} ${highlighted ? 'hit' : ''} ${m.pinned_at ? 'pinned' : ''}`}
+      className={`msg ${side} ${serviceClass(m.service)} ${firstInRun ? 'first' : ''} ${lastInRun ? 'last' : ''} ${highlighted ? 'hit' : ''} ${menu ? 'menu-open' : ''}`}
       data-mid={m.id}
     >
       {isGroup && !m.from_me && firstInRun && <span className="msg-sender">{m.sender_name}</span>}
       <div className="msg-row">
-        <div className={`msg-stack ${m.reactions.length ? 'has-reactions' : ''}`} title={`${fullTime(m.sent_at)} via ${SERVICE_LABEL[m.service]}`}>
+        <div
+          className={`msg-stack ${m.reactions.length ? 'has-reactions' : ''}`}
+          title={`${fullTime(m.sent_at)} via ${SERVICE_LABEL[m.service]}`}
+          {...menuHandlers}
+        >
           {m.reply_to_id && (
             <div className="msg-quote">
               <span className="quote-name">{m.reply_to_from_me ? 'You' : m.reply_to_name ?? 'Someone'}</span>
@@ -193,7 +268,6 @@ export function MessageBubble({
           {m.attachments.map((a) => (
             <AttachmentView key={a.id} a={a} onOpenImage={onOpenImage} />
           ))}
-          {m.pinned_at && !m.unsent && <PinGlyph className="pin-mark" title="Pinned" />}
           {m.unsent && <div className="bubble unsent">Message unsent</div>}
           {hasText && (
             <div className="bubble">
@@ -217,14 +291,10 @@ export function MessageBubble({
             <button className="msg-action" onClick={() => setPicking((p) => !p)} aria-expanded={picking} aria-label="React">React</button>
           )}
           <button className="msg-action" onClick={onReply} aria-label="Reply">Reply</button>
-          {!m.unsent && (
-            <button className="msg-action" onClick={onTogglePin} aria-label={m.pinned_at ? 'Unpin' : 'Pin'}>
-              {m.pinned_at ? 'Unpin' : 'Pin'}
-            </button>
-          )}
           {picking && reactionChoices && <ReactionPicker m={m} choices={reactionChoices} onClose={() => setPicking(false)} />}
         </div>
       </div>
+      {menu && <MessageMenu m={m} at={menu} link={menu.link} choices={reactionChoices} onReply={onReply} onClose={closeMenu} />}
       {(lastInRun || showStatus) && (
         <span className="msg-meta">
           {clock(m.sent_at)}

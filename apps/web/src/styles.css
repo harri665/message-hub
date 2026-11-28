@@ -693,54 +693,49 @@ video.att-media { object-fit: contain; }
 .approval-reply { margin: 0; font-size: 12.5px; color: var(--sub); overflow-wrap: anywhere; }
 .approval-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
-/* ---------- pinned messages ---------- */
-.messages.has-pins { padding-top: 132px; }
-.pin-bar {
+/* ---------- pinned chats ---------- */
+.pin-glyph { flex: none; color: var(--sub); margin-left: -2px; }
+.thread-row.active .pin-glyph { color: rgba(255, 255, 255, 0.82); }
+.thread-row.last-pinned { margin-bottom: 9px; position: relative; }
+.thread-row.last-pinned::after {
+  content: '';
   position: absolute;
-  z-index: 2;
-  top: calc(var(--gap) + 62px);
-  left: calc(var(--gap) + 10px);
-  right: calc(var(--gap) + 10px);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  background: var(--glass-strong);
-  padding: 6px 8px 6px 14px;
-  border-radius: 999px;
-  max-width: 800px;
-  margin: 0 auto;
+  left: 12px;
+  right: 12px;
+  bottom: -5px;
+  border-bottom: 0.5px solid var(--sep);
 }
-.pin-bar-icon { flex: none; color: var(--accent); }
-.pin-bar-main {
-  flex: 1;
-  min-width: 0;
+
+/* ---------- message menu (right-click, or press and hold) ---------- */
+.msg-menu {
+  position: fixed;
+  z-index: 50;
   display: grid;
-  gap: 1px;
+  gap: 4px;
+  padding: 6px;
+  min-width: 180px;
+  border-radius: 18px;
+  background: var(--glass-strong);
+  animation: rise 0.12s ease-out;
+}
+.msg-menu .react-choices { padding-bottom: 4px; border-bottom: 0.5px solid var(--sep); }
+.msg-menu .note, .msg-menu .form-error { padding: 0 8px; max-width: 280px; font-size: 12px; }
+.msg-menu-items { display: grid; gap: 2px; }
+.msg-menu-items button {
   border: 0;
   background: none;
   color: var(--fg);
-  font: inherit;
   text-align: left;
-  padding: 2px 0;
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 10px;
 }
-.pin-bar-label { font-size: 11px; font-weight: 600; color: var(--accent); }
-.pin-bar-who { color: var(--sub); font-weight: 500; }
-.pin-bar-text { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pin-bar-unpin { flex: none; }
-.pin-mark {
-  position: absolute;
-  bottom: -5px;
-  z-index: 1;
-  padding: 3px;
-  width: 18px;
-  height: 18px;
-  border-radius: 999px;
-  color: var(--accent);
-  background: var(--glass-strong);
-  box-shadow: 0 0 0 0.5px var(--ring);
+.msg-menu-items button:hover, .msg-menu-items button:focus-visible { background: var(--fill); outline: none; }
+.msg.menu-open .bubble { filter: brightness(0.94); }
+/* A finger held on a message opens the menu, not the system's text selection or link preview. */
+@media (pointer: coarse) {
+  .msg-stack, .thread-row { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 }
-.msg.in .pin-mark { right: -6px; }
-.msg.out .pin-mark { left: -6px; }
 
 /* ---------- archive ---------- */
 .archived-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 40px; }
