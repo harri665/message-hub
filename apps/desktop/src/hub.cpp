@@ -23,6 +23,7 @@
 #include <QUrlQuery>
 
 #include "platform.h"
+#include "searchassist.h"
 #include "theme.h"
 
 namespace {
@@ -501,6 +502,12 @@ void Hub::applyThreads(const QList<QVariantMap> &rows, bool save) {
 
 void Hub::rebuildThreadModel() {
     emit inboxChanged();
+    {  // The search box suggests these names after "from:" and "in:".
+        QList<SearchAssist::Person> people;
+        people.reserve(m_allThreads.size());
+        for (const auto &t : std::as_const(m_allThreads)) people << SearchAssist::Person{t.value("title").toString(), t.value("is_group").toBool()};
+        SearchAssist::instance()->setPeople(people);
+    }
     int unread = 0;
     for (const auto &t : std::as_const(m_allThreads))
         if (!t.value("muted").toBool()) unread += t.value("unread").toInt();  // muted chats don't add to the count
@@ -513,10 +520,13 @@ void Hub::rebuildThreadModel() {
         m_threadModel.setRows(source);
         return;
     }
-    const QString f = m_filter.trimmed();
+    // "from: mom pizza" narrows the people list by "pizza" only, and by nothing but the words when there are none.
+    bool hadFilters = false;
+    const QString f = SearchAssist::freeText(m_filter, &hadFilters);
     QList<QVariantMap> rows;
-    for (const auto &t : std::as_const(source))
-        if (t.value("title").toString().contains(f, Qt::CaseInsensitive)) rows << t;
+    if (!hadFilters || !f.isEmpty())
+        for (const auto &t : std::as_const(source))
+            if (t.value("title").toString().contains(f, Qt::CaseInsensitive)) rows << t;
     m_threadModel.setRows(rows);
 }
 

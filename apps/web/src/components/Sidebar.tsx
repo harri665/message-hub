@@ -4,6 +4,7 @@ import { api, SERVICE_LABEL, type MessagePage, type ThreadSummary } from '../api
 import { listTime, serviceClass } from '../format.ts';
 import { Avatar } from './Avatar.tsx';
 import { Highlight } from './Highlight.tsx';
+import { allOperators, complete, freeText, type Completion, type Suggestion } from '../searchSuggest.ts';
 
 type Filter = 'all' | 'unread' | 'apple' | 'whatsapp';
 const FILTERS: { key: Filter; label: string }[] = [
@@ -78,6 +79,26 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const searchRef = useRef<HTMLInputElement>(null);
+  // Suggestions for "from:", "has:" and the other filters, shown under the box while it has focus.
+  const [caret, setCaret] = useState(0);
+  const [focused, setFocused] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const [active, setActive] = useState(0);
+  const completion: Completion | null = useMemo(
+    () => (!focused || dismissed ? null : query ? complete(query, caret, threads.data ?? []) : allOperators()),
+    [focused, dismissed, query, caret, threads.data],
+  );
+  const choices = completion?.items.filter((i) => !i.info) ?? [];
+  useEffect(() => setActive(0), [completion?.start, completion?.items.length, query]);
+  const apply = (item: Suggestion) => {
+    if (!completion) return;
+    const next = query.slice(0, completion.start) + item.insert + query.slice(completion.end);
+    const at = completion.start + item.insert.length;
+    setQuery(next);
+    setCaret(at);
+    setDismissed(false);
+    requestAnimationFrame(() => searchRef.current?.setSelectionRange(at, at));
+  };
   const deferred = useDeferredValue(query.trim());
   const searchService = filter === 'apple' || filter === 'whatsapp' ? filter : '';
   const search = useInfiniteQuery({
@@ -107,7 +128,10 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
     if (filter === 'unread') list = list.filter((t) => t.unread > 0);
     else if (filter !== 'all') list = list.filter((t) => t.networks.includes(filter));
     if (deferred) {
-      const needle = deferred.toLowerCase();
+      // "from: mom pizza" narrows the people list by "pizza" only, and by nothing but the words when there are none.
+      const { text, hasFilters } = freeText(deferred);
+      if (hasFilters && !text) return [];
+      const needle = text.toLowerCase();
       list = list.filter((t) => t.title.toLowerCase().includes(needle));
     }
     return list;
@@ -135,16 +159,65 @@ export function Sidebar({ activeTid, onOpen, onSettings }: {
         <button className="pill-btn" onClick={onSettings}>Settings</button>
       </header>
       <div className="sidebar-tools">
+        <div className="search-wrap">
         <input
           ref={searchRef}
           className="search-field"
           type="search"
           placeholder="Search people and messages (Ctrl+K)"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === 'Escape' && setQuery('')}
+          onChange={(e) => { setQuery(e.target.value); setCaret(e.target.selectionStart ?? e.target.value.length); setDismissed(false); }}
+          onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
+          onFocus={() => { setFocused(true); setDismissed(false); }}
+          onBlur={() => setFocused(false)}
+          onKeyDown={(e) => {
+            if (completion && choices.length && !e.nativeEvent.isComposing) {
+              if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                setActive((i) => (i + (e.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length);
+                return;
+              }
+              if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault();
+                apply(choices[active] ?? choices[0]);
+                return;
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                setDismissed(true);
+                return;
+              }
+            }
+            if (e.key === 'Escape') setQuery('');
+          }}
+          role="combobox"
+          aria-expanded={!!completion}
+          aria-autocomplete="list"
+          aria-controls="search-suggestions"
           aria-label="Search people and messages"
+          autoComplete="off"
         />
+        {completion && (
+          <ul id="search-suggestions" className="search-suggest glass" role="listbox">
+            {completion.items.map((item) => {
+              const idx = choices.indexOf(item);
+              return (
+                <li
+                  key={item.label + item.insert}
+                  role={item.info ? undefined : 'option'}
+                  aria-selected={idx === active}
+                  className={`${item.info ? 'info' : ''} ${idx === active ? 'active' : ''}`}
+                  onMouseDown={(e) => { e.preventDefault(); if (!item.info) apply(item); }}
+                  onMouseEnter={() => idx >= 0 && setActive(idx)}
+                >
+                  <span className="suggest-label">{item.label}</span>
+                  {item.hint && <span className="suggest-hint">{item.hint}</span>}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        </div>
         <div className="segmented" role="group" aria-label="Show">
           {FILTERS.map((f) => (
             <button key={f.key} aria-pressed={filter === f.key} onClick={() => setFilter(f.key)}>

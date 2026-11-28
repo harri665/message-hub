@@ -759,3 +759,39 @@ video.att-media { object-fit: contain; }
   background: var(--glass-strong);
   font-size: 13px;
 }
+
+/* ---------- emoji shortcode popup ---------- */
+.emoji-popup {
+  position: fixed;
+  z-index: 60;
+  width: 260px;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border-radius: 14px;
+  background: var(--glass-strong);
+}
+.emoji-popup li { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 9px; cursor: pointer; }
+.emoji-popup li.active { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.emoji-glyph { font-size: 20px; line-height: 1; width: 26px; text-align: center; }
+.emoji-name { font-size: 14px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- search filter suggestions ---------- */
+.search-wrap { position: relative; }
+.search-suggest {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border-radius: 14px;
+  background: var(--glass-strong);
+}
+.search-suggest li { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; border-radius: 9px; cursor: pointer; font-size: 14px; }
+.search-suggest li.active { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.search-suggest li.info { cursor: default; color: var(--sub); font-size: 12px; }
+.suggest-label { font-weight: 600; }
+.suggest-hint { color: var(--sub); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
