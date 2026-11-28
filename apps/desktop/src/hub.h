@@ -43,6 +43,9 @@ class Hub : public QObject {
     Q_PROPERTY(int archivedCount READ archivedCount NOTIFY archivedChanged)
     Q_PROPERTY(int archivedUnread READ archivedUnread NOTIFY archivedChanged)
     Q_PROPERTY(bool windowActive READ windowActive WRITE setWindowActive NOTIFY windowActiveChanged)
+    // Messages the hub will send later in the open chat (and failed ones, with their error).
+    Q_PROPERTY(JsonListModel *scheduled READ scheduled CONSTANT)
+    Q_PROPERTY(QString hubTimeZone READ hubTimeZone NOTIFY hubTimeZoneChanged)
 
 public:
     static Hub *instance();
@@ -56,6 +59,8 @@ public:
     JsonListModel *threads() { return &m_threadModel; }
     JsonListModel *messages() { return &m_messageModel; }
     JsonListModel *results() { return &m_resultModel; }
+    JsonListModel *scheduled() { return &m_scheduledModel; }
+    QString hubTimeZone() const { return m_hubZone; }
     QString filter() const { return m_filter; }
     void setFilter(const QString &f);
     QString currentTid() const { return m_tid; }
@@ -80,6 +85,15 @@ public:
     Q_INVOKABLE void sendFiles(const QList<QUrl> &files, int conversationId);
     Q_INVOKABLE void openAttachment(qint64 id, const QString &filename);
     Q_INVOKABLE void pinMessage(qint64 id, bool pin);
+    // Scheduled messages: the hub sends them at whenMs (milliseconds since the epoch), so the app can be closed. scheduleResult() reports the outcome.
+    Q_INVOKABLE void schedule(const QString &text, int conversationId, int replyToId, qint64 whenMs);
+    Q_INVOKABLE void editScheduled(qint64 id, const QString &text, qint64 whenMs);
+    Q_INVOKABLE void sendScheduledNow(qint64 id);  // also the retry for a failed one
+    Q_INVOKABLE void cancelScheduled(qint64 id);   // also dismisses a failed one
+    Q_INVOKABLE QString sendsLabel(qint64 whenMs) const;  // "tomorrow at 9:00 AM"
+    Q_INVOKABLE QVariantList quickTimes() const;           // [{ label, time, ms }]: later today 18:00, tomorrow 9:00, Monday 9:00
+    Q_INVOKABLE QString localTimeZone() const;
+    Q_INVOKABLE QString inHubZone(qint64 whenMs) const;    // that moment as the hub's TIME_ZONE shows it
     // Archive or unarchive a whole chat (the hub applies it to every chat of the person, and to WhatsApp).
     Q_INVOKABLE void archiveThread(const QString &tid, bool archive);
     // Switch the sidebar between the inbox and the archived chats.
@@ -133,6 +147,8 @@ signals:
     void revealRequested(int row, qint64 id);
     void sendResult(const QString &tid, bool ok, const QString &error);
     void linkPreviewReady(qint64 messageId);
+    void hubTimeZoneChanged();
+    void scheduleResult(bool ok, const QString &error);
 
 private:
     Hub();
@@ -152,6 +168,7 @@ private:
     QVariantMap decorateThread(QVariantMap t) const;
     void refreshCurrent();
     void refreshDetail();
+    void refreshScheduled();
     void loadArchived();
     void tryReveal();
     void applyMessages();
@@ -207,6 +224,8 @@ private:
     QList<QVariantMap> m_msgs;     // newest first, as the hub returned them
     QList<QVariantMap> m_pending;  // messages being sent, newest first
     JsonListModel m_messageModel;
+    JsonListModel m_scheduledModel;
+    QString m_hubZone;
     bool m_hasOlder = false;
     bool m_loadingOlder = false;
     int m_generation = 0;  // bumps when the open thread changes, so late replies are dropped

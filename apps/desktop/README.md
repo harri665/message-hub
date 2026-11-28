@@ -68,6 +68,10 @@ New features go into the shared code; something that can only exist on one syste
   unread count, send no notifications and don't show in the Dynamic Island, and a new message does not bring a chat
   back. Archiving also archives the chat in WhatsApp on the phone (see the hub's notes), and archiving there archives
   it here.
+- **Scheduled messages**: the clock button in the message box (or right-click the send arrow) opens a picker with quick
+  times and a month and time chooser; the hub sends the message at that time, even with the app closed. Scheduled
+  messages show under the chat as dimmed bubbles (click one to edit, send now or cancel), failed ones show their error
+  with Try Again. See the hub README's Scheduled messages.
 - **Follows MacShell's theme while it runs**: dark/light mode, accent colour, the Open Runde font and the 24-hour
   clock are read from `~/.config/macdock/settings.json` and `~/.config/macbar/settings.json`. The window, window buttons and
   colours match MacShell's own app windows. Without MacShell it follows the desktop's dark/light setting.
@@ -195,7 +199,7 @@ To keep notifications coming after login, start it in the background with your s
 [glass](#glass) option, also in the running instance (add `--background` to change it without showing the window).
 
 For development, with `MESSAGE_HUB_DEV=1` set on the running instance, `message-hub --dev "<command>"` drives it:
-`grab <file.png>`, `send <text>`, `filter <text>`, `open <tid>`, `reveal <message id>`, `archive <tid>`, `unarchive <tid>`, `archived on|off`, `pin <id>`, `unpin <id>`, `older`, `top`, `list`, `close`, `settings` (opens the gear menu),
+`grab <file.png>`, `send <text>`, `filter <text>`, `open <tid>`, `reveal <message id>`, `schedule-ui <text>` (opens the schedule picker), `archive <tid>`, `unarchive <tid>`, `archived on|off`, `pin <id>`, `unpin <id>`, `older`, `top`, `list`, `close`, `settings` (opens the gear menu),
 `login <server> <password>`, `logout`, `resize <w>x<h>`, `scheme light|dark|system` (overrides the system's dark/light
 mode; Qt 6.8+). `QT_QPA_PLATFORM=offscreen` runs it without a window, and `MESSAGE_HUB_SOCKET` with
 `MESSAGE_HUB_PROFILE=<dir>` (session and cache in that folder, on Linux and Windows alike; `XDG_CONFIG_HOME` /

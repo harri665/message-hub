@@ -85,7 +85,7 @@ function ScheduledBubble({ s }: { s: Scheduled }) {
       </div>
       <span className={`msg-meta sched-meta ${failed ? 'bad' : ''}`}>
         <ClockGlyph />
-        {sending ? ' Sending…' : failed ? ` Not sent. ${s.error ?? ''}` : ` Sends ${sendsLabel(s.sendAt)}`}
+        {sending ? ' Sending…' : failed ? ` ${s.error || 'Not sent'}` : ` Sends ${sendsLabel(s.sendAt)}`}
         {!failed && !sending && s.error && s.retryAt ? ` (${s.error}; trying again soon)` : ''}
         {failed && (
           <>

@@ -62,6 +62,8 @@ qt_add_qml_module(message-hub
     qml/Glyph.qml
     qml/RoundedImage.qml
     qml/Menu.qml
+    qml/ScheduledRow.qml
+    qml/SchedulePicker.qml
     qml/GlassEdge.qml
   RESOURCES
     ../web/public/icons/icon-192.png
