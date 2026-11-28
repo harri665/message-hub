@@ -101,9 +101,12 @@ export async function editScheduled(id: number, patch: { text?: unknown; sendAt?
     args.push(parseSendAt(patch.sendAt));
     sets.push(`send_at = $${args.length}`, 'attempts = 0', 'retry_at = null');
   }
+  // A failed message that gets a new time is scheduled again.
+  const reschedule = patch.sendAt !== undefined;
+  if (reschedule) sets.push(`status = 'scheduled'`, 'error = null');
   if (!sets.length) throw new ScheduleError(400, 'Nothing to change.');
   const row = await q1<{ tid: string }>(
-    `update scheduled_message set ${sets.join(', ')}, updated_at = now() where id = $1 and status = 'scheduled' returning tid`, args,
+    `update scheduled_message set ${sets.join(', ')}, updated_at = now() where id = $1 and status in ('scheduled'${reschedule ? ", 'failed'" : ''}) returning tid`, args,
   );
   if (!row) throw await notEditable(id);
   changed(row.tid);

@@ -111,7 +111,18 @@ export interface AddressCheck { address: string; imessage: boolean | null; sms: 
 
 export type ComposeService = 'imessage' | 'sms' | 'whatsapp';
 
+export type ScheduledStatus = 'scheduled' | 'sending' | 'sent' | 'failed' | 'cancelled';
+
+/** A message the hub will send at sendAt. Failed ones stay listed (with the error) until retried or dismissed. */
+export interface Scheduled {
+  id: number; tid: string; threadTitle: string | null; conversationId: number; service: Service; text: string;
+  replyToId: number | null; replyToBody: string | null; sendAt: string; status: ScheduledStatus; error: string | null;
+  attempts: number; retryAt: string | null; createdAt: string; sentAt: string | null; messageId: number | null;
+}
+
 export interface Status {
+  /** The hub's TIME_ZONE (IANA name). */
+  timeZone?: string;
   bluebubbles: {
     configured: boolean; url: string | null; connected: boolean; privateApi: boolean; serverVersion: string | null; osVersion: string | null;
     lastSyncAt: string | null; importing: boolean; error: string | null;
@@ -178,6 +189,14 @@ export const api = {
     form.set('file', file);
     return post(`/api/threads/${tid}/send-file`, form);
   },
+  scheduled: (tid: string) => request<Scheduled[]>(`/api/threads/${tid}/scheduled`),
+  allScheduled: () => request<Scheduled[]>('/api/scheduled'),
+  schedule: (tid: string, body: { text: string; sendAt: string; conversationId?: number; replyTo?: number }) =>
+    post<Scheduled>(`/api/threads/${tid}/scheduled`, body),
+  editScheduled: (id: number, body: { text?: string; sendAt?: string }) =>
+    request<Scheduled>(`/api/scheduled/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  cancelScheduled: (id: number) => request<Scheduled>(`/api/scheduled/${id}`, { method: 'DELETE' }),
+  sendScheduledNow: (id: number) => post<Scheduled>(`/api/scheduled/${id}/send-now`),
   reactions: () => request<Record<Network, string[]>>('/api/reactions'),
   react: (messageId: number, emoji: string | null) => post(`/api/messages/${messageId}/react`, { emoji }),
   typing: (tid: string, conversationId: number, typing: boolean, audio = false) =>

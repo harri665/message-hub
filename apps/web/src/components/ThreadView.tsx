@@ -6,6 +6,7 @@ import { Avatar } from './Avatar.tsx';
 import { Highlight } from './Highlight.tsx';
 import { MessageBubble, PinGlyph } from './MessageBubble.tsx';
 import { Composer } from './Composer.tsx';
+import { ClockGlyph, ScheduledBubbles } from './ScheduledBubbles.tsx';
 import { useTyping } from '../stores.ts';
 
 const PAGE = 60;
@@ -47,6 +48,7 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
         ? undefined
         : { after: first[first.length - 1].sent_at },
   });
+  const scheduled = useQuery({ queryKey: ['scheduled', tid], queryFn: () => api.scheduled(tid), refetchInterval: 5 * 60_000 });
   const [findOpen, setFindOpen] = useState(false);
   const [flash, setFlash] = useState<number | null>(null);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
@@ -242,6 +244,7 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
               </span>
             </div>
           ))}
+          {!messages.hasPreviousPage && <ScheduledBubbles items={scheduled.data ?? []} />}
           {typists.length > 0 && !messages.hasPreviousPage && (
             <div className="msg in first last typing-row" aria-live="polite">
               {t?.isGroup && <span className="msg-sender">{typingLabel(typists)}</span>}
@@ -268,6 +271,11 @@ export function ThreadView({ tid, focus, onFocus, onBack }: {
               </Fragment>
             ))}
             {t?.isGroup && t.members.length > 0 && <span> with {t.members.length} people</span>}
+            {!!scheduled.data?.length && (
+              <button className="sched-count" onClick={() => scrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' })} title="Jump to the scheduled messages">
+                <ClockGlyph /> {scheduled.data.length} scheduled
+              </button>
+            )}
           </p>
         </div>
         {t && <ArchiveControl tid={tid} archived={t.archived} hasWhatsApp={t.conversations.some((c) => c.network === 'whatsapp')} />}

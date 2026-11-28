@@ -22,6 +22,7 @@ type LiveMsg =
   | { type: 'conversation-updated'; conversationId: number }
   | { type: 'status'; source: string }
   | { type: 'send-request' }
+  | { type: 'scheduled'; tid: string }
   | { type: 'refresh' }
   | { type: 'typing'; tid: string; conversationId: number; network: 'apple' | 'whatsapp'; typing: boolean; audio: boolean; name: string | null; sender: string | null };
 
@@ -81,6 +82,7 @@ export function useLive(enabled: boolean, openTid: string | null) {
         invalidate(['messages']);
         invalidate(['thread']);
         invalidate(['send-requests']);
+        invalidate(['scheduled']);
       };
       ws.onmessage = (e) => {
         const ev = JSON.parse(e.data) as LiveMsg;
@@ -111,6 +113,11 @@ export function useLive(enabled: boolean, openTid: string | null) {
             break;
           case 'send-request':
             invalidate(['send-requests']);
+            invalidate(['messages']);
+            invalidate(['threads']);
+            break;
+          case 'scheduled':
+            invalidate(['scheduled']);
             invalidate(['messages']);
             invalidate(['threads']);
             break;
